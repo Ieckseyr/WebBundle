@@ -28,7 +28,7 @@ BDS 背包查验、备份、还原、物品去向、网页指令和操作审计�
 独立端：
 
 ```bash
-plugins/WebBundle/web/启动独立网页.bat
+plugins/WebBundle/web/StartStandalone.bat
 ```
 
 打开 `http://服务器IP:8080/`。
