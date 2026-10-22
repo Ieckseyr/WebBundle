@@ -184,7 +184,7 @@ export const logisticsModule = {
                         // 合成栏材料减少：先挂起，等产物真正进入背包/光标后再记账。
                         if (previous && previous.inputCount > inputCount) {
                             pending = { inputs: previous.inputs, counts: previous.counts, ts: Date.now() };
-                            log("info", "合成栏变化: " + String(player.name || "") + " " + previous.inputs.map((entry) => entry.Name + "x" + entry.Count).join("+") + " -> " + inputCount);
+                            // log("info", "合成栏变化: " + String(player.name || "") + " " + previous.inputs.map((entry) => entry.Name + "x" + entry.Count).join("+") + " -> " + inputCount);
                         }
                         if (pending && Date.now() - pending.ts < 1800) {
                             const inputTypes = new Set((pending.inputs || []).map((entry) => String(entry.Name || "")));

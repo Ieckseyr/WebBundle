@@ -127,8 +127,7 @@ class External {
             if (requeue) this.queueSpool(kind, payload);
             const now = Date.now();
             if (!this.offlineWarned || now - this.lastWarnAt > 300000) {
-                log("warn", "推送失败 " + kind + " " + why + "；独立端不可达 " + this.base +
-                    "，已缓存待推送数据（检查 standalone 是否启动、端口/防火墙和 external.url）");
+                // log("warn", "推送失败 " + kind + " " + why + "；独立端不可达 " + this.base +"，已缓存待推送数据（检查 standalone 是否启动、端口/防火墙和 external.url）");
                 this.lastWarnAt = now;
                 this.offlineWarned = true;
             }
