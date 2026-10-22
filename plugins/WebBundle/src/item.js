@@ -325,7 +325,7 @@ function serializeItem(item, options) {
     const snbt = nbtOf(item);
     if (snbt) {
         out.h = fnv1a(snbt);
-        const bytes = utf8Bytes(snbt);
+        const bytes = utf8Bytes(snbt).length;
         out.nbtSize = bytes;
         if (opt.full) {
             const inlineMax = (opt.inlineMaxKB || 64) * 1024;
@@ -446,7 +446,7 @@ function nbtCompoundToSlot(comp, container, options) {
     try {
         const snbt = comp.toSNBT();
         data.h = fnv1a(snbt);
-        data.nbtSize = utf8Bytes(snbt);
+        data.nbtSize = utf8Bytes(snbt).length;
         if (options && options.full) data.nbt = snbt;
     } catch (e) {
         // 忽略 NBT
@@ -492,7 +492,7 @@ function nbtListToSlots(list, container, options) {
         try {
             const snbt = comp.toSNBT();
             data.h = fnv1a(snbt);
-            data.nbtSize = utf8Bytes(snbt);
+            data.nbtSize = utf8Bytes(snbt).length;
             if (options && options.full) data.nbt = snbt;
         } catch (e) {
             // 忽略 NBT

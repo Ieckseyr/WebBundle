@@ -557,7 +557,7 @@ body.auth-page { overflow: auto; }
 .nested-slot img { width: 26px; height: 26px; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); image-rendering: pixelated; object-fit: contain; }
 .nested-slot .count { position: absolute; right: 1px; bottom: 0; padding: 0 2px; background: var(--ink); color: var(--signal); font: 9px/13px "Space Grotesk", Consolas, monospace; }
 .nested-slot.enchanted img { filter: drop-shadow(0 0 3px rgba(187,126,255,.9)); }
-.nested-children { margin: 4px 0 4px 12px; padding-left: 9px; border-left: 2px solid var(--line-strong); }
+.nested-children { grid-column: 1 / -1; margin: 4px 0 4px 12px; padding-left: 9px; border-left: 2px solid var(--line-strong); }
 .nested-empty { color: var(--muted); font-size: 11px; }
 .drawer-section .full { width: 100%; margin-top: 8px; }
 .ench-number { color: var(--muted); font-size: 10px; margin-left: 3px; }
@@ -819,4 +819,13 @@ body.snapshot-open .snapshot-drawer { transform: translateX(0); }
   .backup-player-row { grid-template-columns: 1fr auto; gap: 3px; }
   .backup-player-time, .backup-player-items { grid-column: 1; }
   .backup-player-row .snap-actions { grid-column: 2; grid-row: 1 / span 3; }
+}
+
+/* nested containers: keep nine columns inside phone/tablet drawer */
+@media (max-width: 620px) {
+  .nested-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 2px; width: 100%; }
+  .nested-slot { width: 100%; height: auto; aspect-ratio: 1; }
+  .nested-slot img { width: 68%; height: 68%; }
+  .nested-node { min-width: 0; }
+  .nested-children { margin-left: 4px; padding-left: 4px; }
 }

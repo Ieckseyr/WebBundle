@@ -992,7 +992,8 @@
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         const node = button.closest(".nested-node");
-        const existing = node.querySelector(":scope > .nested-children");
+        const next = node.nextElementSibling;
+        const existing = next && next.classList.contains("nested-children") ? next : null;
         if (existing) {
           existing.remove();
           return;
@@ -1009,7 +1010,7 @@
         const child = document.createElement("div");
         child.className = "nested-children";
         child.innerHTML = nestedGridMarkup(contents, path + "-" + item.slot, item.t);
-        node.appendChild(child);
+        node.after(child);
         bindNestedHost(child, contents, depth + 1, path + "-" + item.slot);
       });
     });
