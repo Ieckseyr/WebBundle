@@ -1,0 +1,21 @@
+# Runtime data and secrets
+plugins/WebBundle/data/
+plugins/WebBundle/WebBundle.zip
+tools/webbundle-web/data/
+tools/webbundle-web/config.json
+logs/
+*.log
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,62 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebBundle 初始化</title>
+  <link rel="stylesheet" href="app.css?v=119">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="auth-brand">WebBundle</div>
+    <h1>首次设置</h1>
+    <p class="muted">创建独立网页端的管理员账号。需要填写 BDS config.json 中的 web.token 进行验证。密码不会以明文保存或显示。</p>
+    <form id="setup-form" autocomplete="off">
+      <label>用户名
+        <input id="username" name="username" autocomplete="username" value="admin" required minlength="3" maxlength="32">
+      </label>
+      <label>密码
+        <input id="password" name="password" type="password" autocomplete="new-password" required minlength="10">
+      </label>
+      <label>确认密码
+        <input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="10">
+      </label>
+      <label>Web Token
+        <input id="setup-token" name="webToken" autocomplete="off" placeholder="填写 BDS config.json 的 web.token">
+      </label>
+      <button type="submit">创建管理员</button>
+      <div id="error" class="error"></div>
+    </form>
+    <p class="auth-foot">创建后请通过 <code>/login</code> 登录；不要把密码写进配置文件、脚本或聊天记录。</p>
+  </main>
+  <script>
+    (function () {
+      const form = document.getElementById("setup-form");
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const error = document.getElementById("error");
+        error.textContent = "";
+        const body = {
+          username: document.getElementById("username").value.trim(),
+          password: document.getElementById("password").value,
+          confirm: document.getElementById("confirm").value,
+          webToken: document.getElementById("setup-token").value.trim()
+        };
+        try {
+          const res = await fetch("/api/v1/auth/setup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          });
+          const data = await res.json();
+          if (!res.ok || data.ok === false) throw new Error(data.error ? data.error.message : "设置失败");
+          location.href = "/";
+        } catch (e) {
+          error.textContent = e.message;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

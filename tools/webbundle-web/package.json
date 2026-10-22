@@ -1,0 +1,10 @@
+{
+  "name": "webbundle-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebBundle standalone web frontend",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

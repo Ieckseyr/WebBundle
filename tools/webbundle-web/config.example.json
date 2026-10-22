@@ -1,0 +1,7 @@
+{
+  "listen": "0.0.0.0:8080",
+  "pushToken": "replace-with-a-long-random-token",
+  "dataPath": "./data/store.json",
+  "staleMs": 15000,
+  "bdsUrl": "http://127.0.0.1:19380"
+}
