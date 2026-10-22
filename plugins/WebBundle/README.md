@@ -20,7 +20,7 @@ BDS 背包查验、备份、还原、物品去向、网页指令和操作审计�
 
 ## 安装
 
-1. 将源码中的 `plugins/WebBundle/` 复制到服务器 `plugins/`，或使用 Release 中的 `WebBundle.zip`。
+1. 将源码中的 `plugins/WebBundle/` 复制到服务器 `plugins/`。
 2. 启动 BDS。
 3. 打开 `http://服务器IP:19380/`。
 4. 首次创建管理员时，填写 `config.json` 中的 `web.token`。
