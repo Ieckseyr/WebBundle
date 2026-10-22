@@ -86,6 +86,8 @@ plugins/WebBundle/data/config.json
 | `pollSec` | 心跳/拉取动作间隔秒数 |
 | `publicUrl` | 浏览器访问独立端的地址，可留空自动推导 |
 
+日志出现 `推送失败 status=-1` 表示 BDS 无法连接 `external.url`，通常是独立端没启动、端口不对或防火墙拦截；不是 Token 错误。
+
 ### nbt
 
 | 字段 | 说明 |
