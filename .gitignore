@@ -1,8 +1,8 @@
 # Runtime data and secrets
 plugins/WebBundle/data/
 plugins/WebBundle/WebBundle.zip
-tools/webbundle-web/data/
-tools/webbundle-web/config.json
+plugins/WebBundle/standalone/data/
+plugins/WebBundle/standalone/config.json
 logs/
 *.log
 

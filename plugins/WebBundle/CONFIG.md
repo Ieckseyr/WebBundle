@@ -108,7 +108,7 @@ stop op deop ban ban-ip whitelist ll script plugins
 文件：
 
 ```text
-tools/webbundle-web/config.json
+plugins/WebBundle/standalone/config.json
 ```
 
 首次启动自动生成，`pushToken` 会自动生成。
@@ -119,7 +119,7 @@ tools/webbundle-web/config.json
 {
   "listen": "0.0.0.0:8080",
   "pushToken": "<推送 Token>",
-  "dataPath": "tools/webbundle-web/data/store.json",
+  "dataPath": "./data/store.json",
   "staleMs": 15000,
   "bdsUrl": "http://127.0.0.1:19380"
 }
@@ -129,7 +129,7 @@ tools/webbundle-web/config.json
 | --- | --- |
 | `listen` | 独立端监听地址，默认 `0.0.0.0:8080` |
 | `pushToken` | 接收 BDS 推送的 Token，必须与内置端 `external.token` 一致 |
-| `dataPath` | 独立端 JSON 数据文件 |
+| `dataPath` | 独立端 JSON 数据文件；相对路径以 standalone 目录为基准 |
 | `staleMs` | 超过该毫秒数未收到心跳则判定 BDS 离线 |
 | `bdsUrl` | 内置端内部地址 |
 
@@ -161,8 +161,8 @@ tools/webbundle-web/config.json
 网页静态文件：plugins/WebBundle/web/
 静态 JSON：plugins/WebBundle/src/json/
 
-独立端配置：tools/webbundle-web/config.json
-独立端数据：tools/webbundle-web/data/store.json
+独立端配置：plugins/WebBundle/standalone/config.json
+独立端数据：plugins/WebBundle/standalone/data/store.json
 ```
 
 ---

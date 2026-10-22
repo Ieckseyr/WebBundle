@@ -15,9 +15,9 @@ BDS 26.x + LeviLamina + LegacyScriptEngine QuickJS 的网页查包工具。
 ## 目录
 
 ```text
-plugins/WebBundle/        BDS 插件与内置网页
-tools/webbundle-web/      独立网页端
-docs/网页查包/            设计与开发文档
+plugins/WebBundle/            BDS 插件与内置网页
+plugins/WebBundle/standalone/ 独立网页端
+docs/网页查包/                设计与开发文档
 ```
 
 ## 快速开始
@@ -30,8 +30,8 @@ docs/网页查包/            设计与开发文档
 独立网页端：
 
 ```bash
-cp tools/webbundle-web/config.example.json tools/webbundle-web/config.json
-node tools/webbundle-web/server.js
+cp plugins/WebBundle/standalone/config.example.json plugins/WebBundle/standalone/config.json
+node plugins/WebBundle/standalone/server.js
 ```
 
 打开 `http://服务器IP:8080/`。

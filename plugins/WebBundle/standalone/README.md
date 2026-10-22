@@ -1,11 +1,11 @@
 # webbundle-web（单独挂载网页端）
 
-BDS 停止后仍能查看最后备份的独立网页端。它不是插件的一部分；**不部署/不启动它，就没有离线查看**。
+BDS 停止后仍能查看最后备份的独立网页端。它随插件目录一起发布，但运行在独立 Node.js 进程中。
 
 ## 运行
 
 ```bash
-node tools/webbundle-web/server.js
+node plugins/WebBundle/standalone/server.js
 ```
 
 首次启动生成 `config.json`，**不生成默认账号密码**。用本机浏览器打开：
@@ -20,7 +20,7 @@ http://127.0.0.1:8080
 
 ```json
 {
-  "listen": "127.0.0.1:8080",
+  "listen": "0.0.0.0:8080",
   "pushToken": "...",
   "dataPath": "./data/store.json",
   "staleMs": 15000,

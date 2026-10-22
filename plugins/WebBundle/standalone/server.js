@@ -12,8 +12,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const ROOT = path.resolve(__dirname, "..", "..");
-const PUBLIC = path.join(ROOT, "plugins", "WebBundle", "web");
+const PUBLIC = path.resolve(__dirname, "..", "web");
+const JSON_DIR = path.resolve(__dirname, "..", "src", "json");
 const CONFIG_PATH = path.join(__dirname, "config.json");
 const DEFAULT_CONFIG = {
   listen: "0.0.0.0:8080",
@@ -702,7 +702,7 @@ async function handleApi(req, res, url) {
     }
     if (pathname === "/items/translations") {
       try {
-        const file = path.join(ROOT, "plugins", "WebBundle", "src", "json", "item-translations.json");
+        const file = path.join(JSON_DIR, "item-translations.json");
         json(res, 200, { ok: true, data: JSON.parse(fs.readFileSync(file, "utf8")) });
       } catch (e) {
         json(res, 200, { ok: true, data: { items: {}, english: {} } });
@@ -712,7 +712,7 @@ async function handleApi(req, res, url) {
     if (pathname === "/items/search") {
       const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
       let table = { items: {}, english: {} };
-      try { table = JSON.parse(fs.readFileSync(path.join(ROOT, "plugins", "WebBundle", "src", "json", "item-translations.json"), "utf8")); } catch (e) { /* 空表 */ }
+      try { table = JSON.parse(fs.readFileSync(path.join(JSON_DIR, "item-translations.json"), "utf8")); } catch (e) { /* 空表 */ }
       const out = [];
       for (const [id, name] of Object.entries(table.items || {})) {
         if (q && !id.toLowerCase().includes(q) && !String(name).toLowerCase().includes(q)) continue;
@@ -724,7 +724,7 @@ async function handleApi(req, res, url) {
     }
     if (pathname === "/items/translations") {
       try {
-        const file = path.join(ROOT, "plugins", "WebBundle", "src", "json", "item-translations.json");
+        const file = path.join(JSON_DIR, "item-translations.json");
         json(res, 200, { ok: true, data: JSON.parse(fs.readFileSync(file, "utf8")) });
       } catch (e) {
         json(res, 200, { ok: true, data: { items: {}, english: {} } });
@@ -734,7 +734,7 @@ async function handleApi(req, res, url) {
     if (pathname === "/items/search") {
       const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
       let table = { items: {}, english: {} };
-      try { table = JSON.parse(fs.readFileSync(path.join(ROOT, "plugins", "WebBundle", "src", "json", "item-translations.json"), "utf8")); } catch (e) { /* 空表 */ }
+      try { table = JSON.parse(fs.readFileSync(path.join(JSON_DIR, "item-translations.json"), "utf8")); } catch (e) { /* 空表 */ }
       const out = [];
       for (const [id, name] of Object.entries(table.items || {})) {
         if (q && !id.toLowerCase().includes(q) && !String(name).toLowerCase().includes(q)) continue;

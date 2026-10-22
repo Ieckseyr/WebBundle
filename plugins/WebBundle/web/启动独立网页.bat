@@ -1,7 +1,7 @@
 @echo off
 setlocal
 title WebBundle Standalone
-pushd "%~dp0..\..\.."
+pushd "%~dp0..\standalone"
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -26,7 +26,7 @@ if not errorlevel 1 (
   exit /b 0
 )
 
-if not exist "tools\webbundle-web\config.json" (
+if not exist "config.json" (
   echo.
   echo First start: config.json will be created.
   echo Open http://127.0.0.1:8080/setup to create the admin account.
@@ -37,11 +37,11 @@ echo.
 echo WebBundle Standalone Web
 echo URL:   http://127.0.0.1:8080
 echo Setup: http://127.0.0.1:8080/setup
-echo Data:  tools\webbundle-web\data\store.json
+echo Data:  plugins\WebBundle\standalone\data\store.json
 echo Press Ctrl+C or close this window to stop.
 echo.
 
-node "tools\webbundle-web\server.js"
+node server.js
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.

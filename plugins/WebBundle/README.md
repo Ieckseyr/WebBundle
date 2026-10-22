@@ -42,7 +42,7 @@ plugins/WebBundle/web/启动独立网页.bat
 | 文件 | 说明 |
 | --- | --- |
 | `plugins/WebBundle/data/config.json` | 内置端 |
-| `tools/webbundle-web/config.json` | 独立端 |
+| `plugins/WebBundle/standalone/config.json` | 独立端 |
 
 完整字段、端口、路径和首次设置说明见：
 
