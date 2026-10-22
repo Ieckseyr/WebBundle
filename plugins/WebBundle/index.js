@@ -48,3 +48,12 @@ export function registerModule(module) {
     return app.modules.startModule(module);
 }
 
+
+// LSE 生命周期：先停网页/推送并落盘，避免 QuickJS 回调在运行时释放后销毁。
+export function onServerStop() {
+    try { app.shutdown(); } catch (e) { }
+}
+
+export function onUnload() {
+    try { app.shutdown(); } catch (e) { }
+}
