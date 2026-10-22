@@ -136,16 +136,23 @@ function createApp() {
 
     app.shutdown = function () {
         if (!app.started) return;
+        app.started = false;
+        // 必须先停推送和 HttpServer，再让 LSE 释放 QuickJS 回调。
+        try {
+            if (app.external) app.external.stop();
+        } catch (e) {
+            log("warn", "停止外部推送失败: " + e.message);
+        }
+        try {
+            if (app.web) app.web.stop();
+        } catch (e) {
+            log("warn", "停止内置网页失败: " + e.message);
+        }
         try {
             app.recorder.captureAll("shutdown");
             log("info", "关服前最后备份已写入");
         } catch (e) {
             log("warn", "关服备份失败: " + e.message);
-        }
-        try {
-            if (app.external) app.external.shutdown();
-        } catch (e) {
-            log("warn", "关服推送失败: " + e.message);
         }
     };
 

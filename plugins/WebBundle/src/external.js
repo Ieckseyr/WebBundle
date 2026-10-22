@@ -54,6 +54,8 @@ class External {
 
     stop() {
         this.enabled = false;
+        this.spool.length = 0;
+        this.localTasks.clear();
     }
 
     status(req) {
@@ -81,12 +83,9 @@ class External {
     }
 
     shutdown() {
-        if (!this.enabled) return;
-        this.push("shutdown", { serverId: this.app.config.serverId, ts: Date.now() });
-        for (const meta of this.app.store.listPlayers()) {
-            const snap = this.app.store.latestSnapshot(meta.xuid);
-            if (snap) this.pushStoredSnapshot(snap);
-        }
+        // 卸载阶段不再发起 network.httpPost：LSE 的异步回调可能在 QuickJS
+        // 运行时释放后才回来，导致 BDS 在关服时崩溃。独立端按 staleMs 判离线。
+        this.stop();
     }
 
     headers() {
