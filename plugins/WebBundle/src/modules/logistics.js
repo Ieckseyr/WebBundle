@@ -13,7 +13,6 @@ export const logisticsModule = {
         let seq = 0;
         const uiCraftState = new Map();
         const inventoryCache = new Map();
-        const uiCraftTimer = setInterval(() => pollAllCraftingUi(), 30000);
 
         function nextId() {
             seq += 1;
@@ -144,19 +143,13 @@ export const logisticsModule = {
             return counts;
         }
 
-        function pollAllCraftingUi() {
-            const players = mc.getOnlinePlayers ? mc.getOnlinePlayers() : [];
-            for (const player of players) {
-                try { refreshInventoryCache(player); } catch (e) { /* 单个玩家 */ }
-            }
-            pollCraftingUi();
-        }
-
         function pollCraftingUi(onlyPlayers) {
             try {
                 const players = onlyPlayers || (mc.getOnlinePlayers ? mc.getOnlinePlayers() : []);
                 for (const player of players) {
                     try {
+                        if (!player || player.isOnline === false) continue;
+                        if (!String(player.xuid || "")) continue;
                         const nbt = player.getNbt ? player.getNbt() : null;
                         const list = nbt && nbt.getTag ? nbt.getTag("PlayerUIItems") : null;
                         if (!list) continue;
@@ -227,9 +220,10 @@ export const logisticsModule = {
                 pollCraftingUi([player]);
                 setTimeout(() => {
                     try {
-                        if (mc.getPlayer && mc.getPlayer(String(player.xuid))) {
-                            refreshInventoryCache(player);
-                            pollCraftingUi([player]);
+                        const current = mc.getPlayer ? mc.getPlayer(String(player.xuid)) : null;
+                        if (current) {
+                            refreshInventoryCache(current);
+                            pollCraftingUi([current]);
                         }
                     } catch (e) { /* 玩家已离开 */ }
                 }, 1500);
