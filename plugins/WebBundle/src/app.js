@@ -72,7 +72,10 @@ function createApp() {
         }, 5000);
         try {
             if (typeof ll !== "undefined" && ll && typeof ll.onUnload === "function") {
-                ll.onUnload(() => app.shutdown());
+                ll.onUnload(() => app.dispose());
+                log("info", "卸载钩子已注册");
+            } else {
+                log("warn", "ll.onUnload 不可用: " + (typeof ll !== "undefined" ? typeof ll.onUnload : "no ll"));
             }
         } catch (e) {
             log("warn", "注册卸载钩子失败: " + e.message);
@@ -141,9 +144,26 @@ function createApp() {
         });
     };
 
+    app.dispose = function () {
+        // 引擎卸载前先释放 HttpServer 包装对象；这是 LSE 0.21.3 的
+        // HttpServerCallback/QuickJS 析构顺序保护，必须早于 app.shutdown 的落盘。
+        try {
+            if (app.external) app.external.stop();
+        } catch (e) { /* 忽略 */ }
+        try {
+            if (app.web) app.web.stop();
+        } catch (e) { /* 忽略 */ }
+        try {
+            app.shutdown();
+        } catch (e) {
+            log("warn", "关服清理失败: " + e.message);
+        }
+    };
+
     app.shutdown = function () {
         if (!app.started) return;
         app.started = false;
+        log("info", "关服清理开始：停止网页、推送并落盘");
         // 必须先停推送和 HttpServer，再让 LSE 释放 QuickJS 回调。
         try {
             if (app.external) app.external.stop();
