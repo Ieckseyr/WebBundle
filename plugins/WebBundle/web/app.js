@@ -1460,7 +1460,7 @@
     try {
       const filter = flowFilterState();
       if (filter.from && filter.to && filter.from >= filter.to) {
-        toast("开始时间必须早于结束时间");
+        if (reset !== false) toast("开始时间必须早于结束时间");
         return;
       }
       const data = await api("/flow?" + flowQueryParams(filter, state.flowPage));
