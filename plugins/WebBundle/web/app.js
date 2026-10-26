@@ -23,6 +23,11 @@
     nestedReadOnly: false,
     enchantDraft: [],
     flow: [],
+    flowPage: 1,
+    flowPageSize: 50,
+    flowHasMore: false,
+    flowSummary: null,
+    flowSearchTimer: null,
     audit: [],
     tasks: [],
     snapshots: [],
@@ -314,6 +319,27 @@
   function fmtDate(ts) {
     if (!ts) return "--";
     try { return new Date(ts).toLocaleString("zh-CN", { hour12: false }); } catch (e) { return "--"; }
+  }
+
+  function fmtDateOnly(ts) {
+    if (!ts) return "--";
+    try {
+      const d = new Date(ts);
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    } catch (e) { return "--"; }
+  }
+
+  function fmtDateTimeInput(ts) {
+    if (!ts) return "";
+    const d = new Date(Number(ts));
+    if (isNaN(d.getTime())) return "";
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  }
+
+  function fmtRangeLabel(from, to) {
+    if (!from || !to) return "全部记录";
+    return fmtDateOnly(from) + " " + fmtTime(from).slice(0, 5) + " ~ " + fmtDateOnly(to) + " " + fmtTime(to).slice(0, 5);
   }
 
   function enableContourFallback(canvas) {
@@ -681,9 +707,19 @@
     if (!admin && (state.view === "command" || state.view === "audit")) switchView("players");
   }
 
+  function renderFlowPlayers() {
+    const select = $("flow-player");
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">全服玩家</option>' + state.players.map((p) =>
+      `<option value="${esc(p.xuid)}">${esc(p.name || p.xuid)}</option>`).join("");
+    if (current && state.players.some((p) => String(p.xuid) === String(current))) select.value = current;
+  }
+
   async function loadPlayers() {
     const list = await api("/players");
     state.players = Array.isArray(list) ? list : [];
+    renderFlowPlayers();
     const q = ($("player-search").value || "").trim().toLowerCase();
     const filtered = state.players.filter((p) => !q || (p.name || "").toLowerCase().includes(q) || String(p.xuid).includes(q));
     document.querySelector(".manifest-head strong").textContent = String(state.players.length).padStart(2, "0");
@@ -1380,11 +1416,55 @@
     $("sys-nbt").textContent = String(system.nbtObjects || 0);
   }
 
-  async function loadFlow() {
+  function flowFilterState() {
+    const active = document.querySelector("[data-flow-filter].active");
+    const mode = active ? active.dataset.flowFilter : "all";
+    const fromValue = $("flow-from") ? $("flow-from").value : "";
+    const toValue = $("flow-to") ? $("flow-to").value : "";
+    const from = fromValue ? new Date(fromValue).getTime() : 0;
+    const to = toValue ? new Date(toValue).getTime() : 0;
+    return {
+      mode: mode,
+      from: Number.isFinite(from) ? from : 0,
+      to: Number.isFinite(to) ? to : 0,
+      xuid: $("flow-player") ? $("flow-player").value : "",
+      q: $("flow-search") ? $("flow-search").value.trim() : "",
+      kind: mode === "craft" ? "craft" : "",
+      direction: mode === "drop" ? "out" : (mode === "pickup" ? "in" : "")
+    };
+  }
+
+  function flowQueryParams(filter, page) {
+    const params = new URLSearchParams();
+    if (filter.from) params.set("from", String(filter.from));
+    if (filter.to) params.set("to", String(filter.to));
+    if (filter.xuid) params.set("xuid", filter.xuid);
+    if (filter.q) params.set("q", filter.q);
+    if (filter.kind) params.set("kind", filter.kind);
+    if (filter.direction) params.set("direction", filter.direction);
+    if (page) params.set("page", String(page));
+    params.set("pageSize", String(state.flowPageSize));
+    return params.toString();
+  }
+
+  function updateFlowRangeLabel() {
+    const label = $("flow-range-label");
+    if (!label) return;
+    const from = $("flow-from") ? new Date($("flow-from").value).getTime() : 0;
+    const to = $("flow-to") ? new Date($("flow-to").value).getTime() : 0;
+    label.textContent = fmtRangeLabel(from, to);
+  }
+
+  async function loadFlow(reset) {
+    if (reset !== false) state.flowPage = 1;
     try {
-      const list = await api("/flow?limit=500");
-      state.flow = Array.isArray(list) ? list : [];
-      renderFlow("all", "");
+      const filter = flowFilterState();
+      const data = await api("/flow?" + flowQueryParams(filter, state.flowPage));
+      state.flow = Array.isArray(data && data.items) ? data.items : [];
+      state.flowPage = Number(data && data.page || state.flowPage);
+      state.flowHasMore = !!(data && data.hasMore);
+      renderFlowRows();
+      updateFlowRangeLabel();
     } catch (e) {
       if (!e.auth) toast("物品去向数据读取失败: " + e.message);
     }
@@ -1410,16 +1490,12 @@
       "</div></details>";
   }
 
-  function renderFlow(filter, query) {
-    const q = String(query || "").toLowerCase();
-    const list = state.flow.filter((row) => {
-      if (filter === "drop" && row.direction !== "out") return false;
-      if (filter === "pickup" && row.direction !== "in") return false;
-      if (filter === "craft" && row.kind !== "craft") return false;
-      if (q && !(String(row.name || "").toLowerCase().includes(q) || String((row.item || {}).t || "").includes(q))) return false;
-      return true;
-    });
-    $("flow-count").textContent = list.length + " 条";
+  function renderFlowRows() {
+    const list = state.flow || [];
+    $("flow-count").textContent = "本页 " + list.length + " 条";
+    $("flow-page-label").textContent = "第 " + state.flowPage + " 页";
+    $("flow-prev").disabled = state.flowPage <= 1;
+    $("flow-next").disabled = !state.flowHasMore;
     $("flow-rows").innerHTML = list.map((row) => {
       const item = row.item || {};
       const isCraft = row.kind === "craft";
@@ -1429,7 +1505,7 @@
       const sourceLabel = isCraft ? "合成" : (row.ref ? "实体" : "背包");
       const detail = isCraft ? `<small class="craft-detail">${esc(consumed || "?")} → ${esc(gained || itemName(item))}</small>` : "";
       return `<div class="table-row">
-        <span class="mono">${fmtTime(row.ts)}</span>
+        <span class="mono flow-time">${esc(fmtDate(row.ts))}</span>
         <span>${esc(row.name || row.xuid)}</span>
         <span class="dir ${isCraft ? "craft" : (row.direction === "in" ? "in" : "out")}">${kindLabel}</span>
         <span class="item-cell">${iconImg(item.t, itemName(item), false)}<span>${esc(itemName(item))}</span>${detail}</span>
@@ -1438,7 +1514,73 @@
         <span class="flow-coords">${esc(flowCoords(row))}</span>
         ${flowContainerMarkup(item)}
       </div>`;
-    }).join("") || '<div class="ench-empty">无匹配的物品去向记录。</div>';
+    }).join("") || '<div class="ench-empty">该范围内无匹配的物品去向记录。</div>';
+  }
+
+  function flowSummaryItemRows(items) {
+    return (items || []).map((item) => {
+      const dir = item.direction === "out" ? "out" : "in";
+      return `<div class="flow-summary-item">
+        ${iconImg(item.t, itemName(item), false)}
+        <span class="grow"><b>${esc(itemName(item))}</b><small>${dir === "out" ? "丢失" : "获得"} · ${Number(item.events || 0)} 次 · 首次 ${esc(fmtDate(item.firstTs))} · 末次 ${esc(fmtDate(item.lastTs))}</small></span>
+        <span class="dir ${dir}">${dir === "out" ? "丢失" : "获得"}</span>
+        <b class="flow-summary-count">×${Number(item.count || 0)}</b>
+      </div>`;
+    }).join("");
+  }
+
+  function renderFlowSummary(data) {
+    const totals = data && data.totals || {};
+    const players = data && Array.isArray(data.players) ? data.players : [];
+    const items = data && Array.isArray(data.items) ? data.items : [];
+    const range = fmtRangeLabel(Number(data && data.from || 0), Number(data && data.to || 0));
+    const empty = !totals.events;
+    $("flow-summary-panel").classList.remove("hidden");
+    $("flow-summary-body").innerHTML = empty
+      ? '<div class="ench-empty">该时间范围内没有可总结的物品流动记录。</div>'
+      : `<div class="flow-summary-head">
+          <div><span class="micro">时间范围</span><b>${esc(range)}</b></div>
+          <div><span class="micro">丢失 / 获得</span><b><span class="warn">${Number(totals.outCount || 0)}</span> / <span class="ok">${Number(totals.inCount || 0)}</span></b></div>
+          <div><span class="micro">事件 / 物品</span><b>${Number(totals.events || 0)} 次 / ${Number(totals.count || 0)} 件</b></div>
+        </div>
+        <div class="flow-summary-lead">在 <b>${esc(range)}</b> 期间，全服共丢失 <b class="warn">${Number(totals.outCount || 0)}</b> 件，获得 <b class="ok">${Number(totals.inCount || 0)}</b> 件。</div>
+        <div class="flow-summary-section"><div class="section-head"><span class="micro">全服物品合并</span><span class="rule"></span><span class="count">${items.length}</span></div>
+          <div class="flow-summary-list">${flowSummaryItemRows(items) || '<div class="ench-empty">无物品记录。</div>'}</div>
+        </div>
+        <div class="flow-summary-section"><div class="section-head"><span class="micro">玩家流动总结</span><span class="rule"></span><span class="count">${players.length}</span></div>
+          <div class="flow-summary-players">${players.map((player) => `<details class="flow-summary-player">
+            <summary><b>${esc(player.name || player.xuid)}</b><span>丢失 ${Number(player.outCount || 0)} · 获得 ${Number(player.inCount || 0)} · ${Number(player.events || 0)} 次</span></summary>
+            <div class="flow-summary-list">${flowSummaryItemRows(player.items) || '<div class="ench-empty">无物品记录。</div>'}</div>
+          </details>`).join("")}</div>
+        </div>`;
+    $("flow-summary-panel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  async function loadFlowSummary() {
+    try {
+      const filter = flowFilterState();
+      const data = await api("/flow/summary?" + flowQueryParams(filter, 0));
+      state.flowSummary = data;
+      renderFlowSummary(data);
+    } catch (e) {
+      if (!e.auth) toast("区间总结读取失败: " + e.message);
+    }
+  }
+
+  function setFlowRangeDays(days) {
+    const to = Date.now();
+    const from = to - Number(days || 1) * 24 * 3600 * 1000;
+    $("flow-from").value = fmtDateTimeInput(from);
+    $("flow-to").value = fmtDateTimeInput(to);
+    updateFlowRangeLabel();
+  }
+
+  function scheduleFlowReload() {
+    if (state.flowSearchTimer) clearTimeout(state.flowSearchTimer);
+    state.flowSearchTimer = setTimeout(() => {
+      state.flowSearchTimer = null;
+      loadFlow(true);
+    }, 280);
   }
 
   async function loadAudit() {
@@ -1577,7 +1719,7 @@
       <div class="snapshot-drawer-group"><span>${title}</span><b>${rows.length}</b></div>
       ${rows.map((row) => `
         <div class="snapshot-drawer-row">
-          <span class="snap-time">${esc(fmtTime(row.ts))}</span>
+          <span class="snap-time">${esc(fmtDate(row.ts))}</span>
           <span class="snap-info"><b>${esc(snapshotReason(row.reason))}</b><span>${esc(row.itemCount || 0)} 件 · ${esc(String(row.id || "").slice(-18))}</span></span>
           <span class="snap-actions">${snapshotRowActions("drawer", row)}</span>
         </div>`).join("")}
@@ -1930,7 +2072,7 @@
         updateTop(meta);
         if (state.current) await loadInventory(false);
         if (state.view === "overview") await loadOverview();
-        if (state.view === "flow") await loadFlow();
+        if (state.view === "flow") await loadFlow(false);
         if (state.view === "audit") await loadAudit();
         if (state.view === "tasks") await loadTasks();
         if (state.view === "snapshots") await loadGlobalSnapshots();
@@ -2240,13 +2382,39 @@
       button.addEventListener("click", () => {
         document.querySelectorAll("[data-flow-filter]").forEach((b) => b.classList.remove("active"));
         button.classList.add("active");
-        renderFlow(button.dataset.flowFilter, $("flow-search").value);
+        loadFlow(true);
       });
     });
-    $("flow-search").addEventListener("input", () => {
-      const active = document.querySelector("[data-flow-filter].active");
-      renderFlow(active ? active.dataset.flowFilter : "all", $("flow-search").value);
+    $("flow-search").addEventListener("input", scheduleFlowReload);
+    $("flow-search").addEventListener("keydown", (event) => { if (event.key === "Enter") loadFlow(true); });
+    $("flow-apply").addEventListener("click", () => loadFlow(true));
+    $("flow-player").addEventListener("change", () => loadFlow(true));
+    $("flow-span").addEventListener("change", () => {
+      setFlowRangeDays($("flow-span").value);
+      loadFlow(true);
     });
+    $("flow-from").addEventListener("change", updateFlowRangeLabel);
+    $("flow-to").addEventListener("change", updateFlowRangeLabel);
+    $("flow-reset").addEventListener("click", () => {
+      document.querySelectorAll("[data-flow-filter]").forEach((b) => b.classList.toggle("active", b.dataset.flowFilter === "all"));
+      $("flow-search").value = "";
+      $("flow-player").value = "";
+      $("flow-span").value = "1";
+      setFlowRangeDays(1);
+      loadFlow(true);
+    });
+    $("flow-prev").addEventListener("click", () => {
+      if (state.flowPage <= 1) return;
+      state.flowPage -= 1;
+      loadFlow(false);
+    });
+    $("flow-next").addEventListener("click", () => {
+      if (!state.flowHasMore) return;
+      state.flowPage += 1;
+      loadFlow(false);
+    });
+    $("flow-summary-btn").addEventListener("click", loadFlowSummary);
+    $("flow-summary-close").addEventListener("click", () => $("flow-summary-panel").classList.add("hidden"));
     document.querySelectorAll("[data-task-filter]").forEach((button) => {
       button.addEventListener("click", () => {
         document.querySelectorAll("[data-task-filter]").forEach((b) => b.classList.remove("active"));
@@ -2294,6 +2462,7 @@
   }
 
   bind();
+  setFlowRangeDays(1);
   applyLoginMode();
   initContours();
   updateRailIndicator();

@@ -74,6 +74,12 @@ class PagedIndex {
         return out;
     }
 
+    replace(items) {
+        this.clear();
+        const list = Array.isArray(items) ? items : [];
+        for (let i = list.length - 1; i >= 0; i--) this.unshift(list[i]);
+    }
+
     unshift(item, onDrop) {
         let tokens = this.pages();
         if (!tokens.length) {
@@ -127,7 +133,12 @@ class Store {
         }
         if (!this.db) throw new Error("存储打开失败: " + this.dir);
         this.indexLimit = Number(config.storage.indexLimit || 3000);
-        this.flowIndex = new PagedIndex(this, "flow:index", 200, 5000);
+        const flowCfg = config.flow || {};
+        this.flowRetentionDays = Math.max(1, Math.min(365, Number(flowCfg.retentionDays || 30)));
+        this.flowMaxEvents = Math.max(1000, Math.min(500000, Number(flowCfg.maxEvents || 100000)));
+        this.flowPageSize = Math.max(20, Math.min(200, Number(flowCfg.pageSize || 50)));
+        this.flowIndex = new PagedIndex(this, "flow:index", 200, this.flowMaxEvents);
+        this.lastFlowPrune = Date.now();
         this.playerIndex = new PagedIndex(this, "player:index", 200, 10000);
         this.snapshotIndexes = new Map();
         this._playerSet = null;
@@ -511,28 +522,199 @@ class Store {
         this.flowIndex.unshift(event.id, (id) => {
             try { this.db.delete("flow:" + id); } catch (e) { /* 忽略 */ }
         });
+        this.maybePruneFlow();
     }
 
     putFlow(event) {
         if (!event || !event.id) return false;
         this.set("flow:" + event.id, event);
-        const recent = this.flowIndex.read(5000);
+        const recent = this.flowIndex.read(this.flowIndex.maxItems);
         if (recent.indexOf(event.id) < 0) this.flowIndex.unshift(event.id);
         return true;
     }
 
+    flowMatches(event, filter) {
+        const f = filter || {};
+        if (!event) return false;
+        const ts = Number(event.ts || 0);
+        if (f.from && ts < Number(f.from)) return false;
+        if (f.to && ts > Number(f.to)) return false;
+        if (f.xuid && String(event.xuid) !== String(f.xuid)) return false;
+        if (f.kind && event.kind !== f.kind) return false;
+        if (f.direction && event.direction !== f.direction) return false;
+        if (f.item && String(event.item && event.item.t || "") !== String(f.item)) return false;
+        if (f.q) {
+            const q = String(f.q).toLowerCase();
+            const name = String(event.name || "").toLowerCase();
+            const xuid = String(event.xuid || "").toLowerCase();
+            const item = event.item || {};
+            const type = String(item.t || "").toLowerCase();
+            const itemName = String((item.meta && item.meta.name) || item.n || "").toLowerCase();
+            if (!name.includes(q) && !xuid.includes(q) && !type.includes(q) && !itemName.includes(q)) return false;
+        }
+        return true;
+    }
+
+    flowCount(event) {
+        const item = event && event.item ? event.item : {};
+        return Math.max(1, Number(event && event.count || item.c || 1));
+    }
+
+    queryFlow(filter, options) {
+        const opt = options || {};
+        const rawPage = Number(opt.page);
+        const page = Number.isFinite(rawPage) ? Math.max(1, Math.floor(rawPage)) : 1;
+        const rawSize = Number(opt.pageSize);
+        const pageSize = Number.isFinite(rawSize) ? Math.max(1, Math.min(200, Math.floor(rawSize))) : this.flowPageSize;
+        const offset = (page - 1) * pageSize;
+        const index = this.flowIndex.read(this.flowIndex.maxItems);
+        const matched = [];
+        let skipped = 0;
+        let hasMore = false;
+        for (const id of index) {
+            const event = this.get("flow:" + id, null);
+            if (!event) continue;
+            const ts = Number(event.ts || 0);
+            if (filter && filter.from && ts < Number(filter.from)) break;
+            if (!this.flowMatches(event, filter)) continue;
+            if (skipped < offset) {
+                skipped += 1;
+                continue;
+            }
+            if (matched.length < pageSize) {
+                matched.push(event);
+            } else {
+                hasMore = true;
+                break;
+            }
+        }
+        return {
+            items: matched,
+            page: page,
+            pageSize: pageSize,
+            hasMore: hasMore,
+            from: Number(filter && filter.from || 0),
+            to: Number(filter && filter.to || 0)
+        };
+    }
+
+    aggregateFlow(filter) {
+        const f = filter || {};
+        const index = this.flowIndex.read(this.flowIndex.maxItems);
+        const players = new Map();
+        const items = new Map();
+        const totals = { events: 0, count: 0, inCount: 0, outCount: 0 };
+        let newest = 0;
+        let oldest = 0;
+        for (const id of index) {
+            const event = this.get("flow:" + id, null);
+            if (!event) continue;
+            const ts = Number(event.ts || 0);
+            if (f.from && ts < Number(f.from)) break;
+            if (!this.flowMatches(event, f)) continue;
+            const item = event.item || {};
+            const type = String(item.t || "");
+            const count = this.flowCount(event);
+            const direction = event.direction === "out" ? "out" : "in";
+            const xuid = String(event.xuid || "");
+            const name = String(event.name || xuid);
+            const playerKey = xuid + "|" + type + "|" + direction;
+            const globalKey = type + "|" + direction;
+
+            let p = players.get(xuid);
+            if (!p) {
+                p = { xuid: xuid, name: name, events: 0, count: 0, inCount: 0, outCount: 0, items: new Map() };
+                players.set(xuid, p);
+            }
+            p.events += 1;
+            p.count += count;
+            if (direction === "out") p.outCount += count; else p.inCount += count;
+            let pi = p.items.get(playerKey);
+            if (!pi) {
+                pi = { t: type, direction: direction, count: 0, events: 0, firstTs: ts, lastTs: ts };
+                p.items.set(playerKey, pi);
+            }
+            pi.count += count;
+            pi.events += 1;
+            if (ts < pi.firstTs) pi.firstTs = ts;
+            if (ts > pi.lastTs) pi.lastTs = ts;
+
+            let gi = items.get(globalKey);
+            if (!gi) {
+                gi = { t: type, direction: direction, count: 0, events: 0, firstTs: ts, lastTs: ts };
+                items.set(globalKey, gi);
+            }
+            gi.count += count;
+            gi.events += 1;
+            if (ts < gi.firstTs) gi.firstTs = ts;
+            if (ts > gi.lastTs) gi.lastTs = ts;
+
+            totals.events += 1;
+            totals.count += count;
+            if (direction === "out") totals.outCount += count; else totals.inCount += count;
+            if (!newest || ts > newest) newest = ts;
+            if (!oldest || ts < oldest) oldest = ts;
+        }
+        const playerList = Array.from(players.values()).map((entry) => Object.assign({}, entry, {
+            items: Array.from(entry.items.values()).sort((a, b) => b.count - a.count)
+        })).sort((a, b) => b.count - a.count || String(a.name).localeCompare(String(b.name), "zh-CN"));
+        const itemList = Array.from(items.values()).sort((a, b) => b.count - a.count);
+        return {
+            from: Number(f.from || oldest || 0),
+            to: Number(f.to || newest || 0),
+            firstTs: oldest,
+            lastTs: newest,
+            totals: totals,
+            players: playerList,
+            items: itemList
+        };
+    }
+
+    maybePruneFlow() {
+        if (this.lastFlowPrune && Date.now() - this.lastFlowPrune < 6 * 3600 * 1000) return 0;
+        return this.pruneFlow();
+    }
+
+    pruneFlow() {
+        const cutoff = Date.now() - this.flowRetentionDays * 24 * 3600 * 1000;
+        const ids = this.flowIndex.read(this.flowIndex.maxItems);
+        const keep = [];
+        const drop = [];
+        let expired = false;
+        for (const id of ids) {
+            const event = this.get("flow:" + id, null);
+            if (!event) {
+                drop.push(id);
+                continue;
+            }
+            const ts = Number(event.ts || 0);
+            if (expired || ts < cutoff) {
+                expired = true;
+                drop.push(id);
+            } else {
+                keep.push(id);
+            }
+        }
+        if (drop.length) {
+            for (const id of drop) {
+                try { this.db.delete("flow:" + id); } catch (e) { /* 忽略 */ }
+            }
+            this.flowIndex.replace(keep);
+            log("info", "物品去向清理 " + drop.length + " 条，保留 " + keep.length + " 条（" + this.flowRetentionDays + " 天）");
+        }
+        this.lastFlowPrune = Date.now();
+        return drop.length;
+    }
+
     listFlow(filter, limit) {
         const f = filter || {};
-        const index = this.flowIndex.read(5000);
+        const index = this.flowIndex.read(this.flowIndex.maxItems);
         const out = [];
         const max = Math.max(1, Math.min(Number(limit || 100), 500));
         for (const id of index) {
             const event = this.get("flow:" + id, null);
             if (!event) continue;
-            if (f.xuid && event.xuid !== f.xuid) continue;
-            if (f.kind && event.kind !== f.kind) continue;
-            if (f.direction && event.direction !== f.direction) continue;
-            if (f.item && event.item && event.item.t !== f.item) continue;
+            if (!this.flowMatches(event, f)) continue;
             out.push(event);
             if (out.length >= max) break;
         }

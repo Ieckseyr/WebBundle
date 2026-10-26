@@ -84,6 +84,174 @@ function save() {
 
 function now() { return Date.now(); }
 
+const FLOW_RETENTION_DAYS = 30;
+const FLOW_MAX_EVENTS = 100000;
+const FLOW_PAGE_SIZE = 50;
+let lastFlowPrune = 0;
+
+function flowTime(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 0) return n;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function flowRange(url) {
+  const end = now();
+  let from = flowTime(url.searchParams.get("from"), end - FLOW_RETENTION_DAYS * 24 * 3600 * 1000);
+  let to = flowTime(url.searchParams.get("to"), end);
+  if (from > to) {
+    const swap = from;
+    from = to;
+    to = swap;
+  }
+  return {
+    from: from,
+    to: to,
+    xuid: String(url.searchParams.get("xuid") || ""),
+    kind: String(url.searchParams.get("kind") || ""),
+    direction: String(url.searchParams.get("direction") || ""),
+    item: String(url.searchParams.get("item") || ""),
+    q: String(url.searchParams.get("q") || "").trim()
+  };
+}
+
+function flowCountOf(event) {
+  const item = event && event.item ? event.item : {};
+  return Math.max(1, Number(event && event.count || item.c || 1));
+}
+
+function flowMatches(event, filter) {
+  if (!event) return false;
+  const f = filter || {};
+  const ts = Number(event.ts || 0);
+  if (f.from && ts < Number(f.from)) return false;
+  if (f.to && ts > Number(f.to)) return false;
+  if (f.xuid && String(event.xuid) !== String(f.xuid)) return false;
+  if (f.kind && event.kind !== f.kind) return false;
+  if (f.direction && event.direction !== f.direction) return false;
+  if (f.item && String(event.item && event.item.t || "") !== String(f.item)) return false;
+  if (f.q) {
+    const q = String(f.q).toLowerCase();
+    const name = String(event.name || "").toLowerCase();
+    const xuid = String(event.xuid || "").toLowerCase();
+    const item = event.item || {};
+    const type = String(item.t || "").toLowerCase();
+    const itemName = String((item.meta && item.meta.name) || item.n || "").toLowerCase();
+    if (!name.includes(q) && !xuid.includes(q) && !type.includes(q) && !itemName.includes(q)) return false;
+  }
+  return true;
+}
+
+function flowQuery(filter, page, pageSize) {
+  const rawPage = Number(page);
+  const current = Number.isFinite(rawPage) ? Math.max(1, Math.floor(rawPage)) : 1;
+  const rawSize = Number(pageSize);
+  const size = Number.isFinite(rawSize) ? Math.max(1, Math.min(200, Math.floor(rawSize))) : FLOW_PAGE_SIZE;
+  const offset = (current - 1) * size;
+  const items = [];
+  let skipped = 0;
+  let hasMore = false;
+  for (const event of store.flow || []) {
+    if (!event) continue;
+    if (filter.from && Number(event.ts || 0) < filter.from) break;
+    if (!flowMatches(event, filter)) continue;
+    if (skipped < offset) {
+      skipped += 1;
+      continue;
+    }
+    if (items.length < size) items.push(event);
+    else {
+      hasMore = true;
+      break;
+    }
+  }
+  return { items: items, page: current, pageSize: size, hasMore: hasMore, from: filter.from, to: filter.to };
+}
+
+function flowSummary(filter) {
+  const players = new Map();
+  const items = new Map();
+  const totals = { events: 0, count: 0, inCount: 0, outCount: 0 };
+  let newest = 0;
+  let oldest = 0;
+  for (const event of store.flow || []) {
+    if (!event) continue;
+    const ts = Number(event.ts || 0);
+    if (filter.from && ts < filter.from) break;
+    if (!flowMatches(event, filter)) continue;
+    const item = event.item || {};
+    const type = String(item.t || "");
+    const count = flowCountOf(event);
+    const direction = event.direction === "out" ? "out" : "in";
+    const xuid = String(event.xuid || "");
+    const name = String(event.name || xuid);
+    const playerKey = xuid + "|" + type + "|" + direction;
+    const globalKey = type + "|" + direction;
+    let p = players.get(xuid);
+    if (!p) {
+      p = { xuid: xuid, name: name, events: 0, count: 0, inCount: 0, outCount: 0, items: new Map() };
+      players.set(xuid, p);
+    }
+    p.events += 1;
+    p.count += count;
+    if (direction === "out") p.outCount += count; else p.inCount += count;
+    let pi = p.items.get(playerKey);
+    if (!pi) {
+      pi = { t: type, direction: direction, count: 0, events: 0, firstTs: ts, lastTs: ts };
+      p.items.set(playerKey, pi);
+    }
+    pi.count += count;
+    pi.events += 1;
+    if (ts < pi.firstTs) pi.firstTs = ts;
+    if (ts > pi.lastTs) pi.lastTs = ts;
+    let gi = items.get(globalKey);
+    if (!gi) {
+      gi = { t: type, direction: direction, count: 0, events: 0, firstTs: ts, lastTs: ts };
+      items.set(globalKey, gi);
+    }
+    gi.count += count;
+    gi.events += 1;
+    if (ts < gi.firstTs) gi.firstTs = ts;
+    if (ts > gi.lastTs) gi.lastTs = ts;
+    totals.events += 1;
+    totals.count += count;
+    if (direction === "out") totals.outCount += count; else totals.inCount += count;
+    if (!newest || ts > newest) newest = ts;
+    if (!oldest || ts < oldest) oldest = ts;
+  }
+  return {
+    from: Number(filter.from || oldest || 0),
+    to: Number(filter.to || newest || 0),
+    firstTs: oldest,
+    lastTs: newest,
+    totals: totals,
+    players: Array.from(players.values()).map((entry) => Object.assign({}, entry, {
+      items: Array.from(entry.items.values()).sort((a, b) => b.count - a.count)
+    })).sort((a, b) => b.count - a.count || String(a.name).localeCompare(String(b.name), "zh-CN")),
+    items: Array.from(items.values()).sort((a, b) => b.count - a.count)
+  };
+}
+
+function pruneFlow(force) {
+  const current = now();
+  if (!force && lastFlowPrune && current - lastFlowPrune < 6 * 3600 * 1000) return 0;
+  const cutoff = current - FLOW_RETENTION_DAYS * 24 * 3600 * 1000;
+  const before = Array.isArray(store.flow) ? store.flow.length : 0;
+  store.flow = (store.flow || []).filter((event) => event && Number(event.ts || 0) >= cutoff);
+  if (store.flow.length > FLOW_MAX_EVENTS) store.flow = store.flow.slice(0, FLOW_MAX_EVENTS);
+  lastFlowPrune = current;
+  const removed = before - store.flow.length;
+  if (removed > 0) {
+    save();
+    console.log("[webbundle-web] 物品去向清理 " + removed + " 条，保留 " + store.flow.length + " 条（30 天）");
+  }
+  return removed;
+}
+
+pruneFlow(true);
+
 const sessions = new Map();
 const loginFails = new Map();
 const PBKDF2_ITERATIONS = 150000;
@@ -474,7 +642,8 @@ async function handlePush(req, res, url) {
       if (!event || !event.id) continue;
       store.flow.unshift(event);
     }
-    store.flow = store.flow.slice(0, 5000);
+    pruneFlow(false);
+    store.flow = store.flow.slice(0, FLOW_MAX_EVENTS);
     save();
     json(res, 200, { ok: true });
     return;
@@ -607,11 +776,6 @@ async function handleAuth(req, res, url) {
     const username = String(body.username || "").trim();
     const password = String(body.password || "");
     const builtin = await loginViaBuiltin(username, password);
-    if (builtin && builtin.rejected) {
-      noteLoginFail(req);
-      json(res, 401, { ok: false, error: { code: "UNAUTHORIZED", message: "用户名或密码错误" } });
-      return;
-    }
     if (builtin && builtin.username) {
       loginFails.delete(clientIp(req));
       const sid = crypto.randomBytes(32).toString("base64url");
@@ -625,6 +789,7 @@ async function handleAuth(req, res, url) {
       json(res, 409, { ok: false, error: { code: "SETUP_REQUIRED", message: "请先设置管理员账号" } });
       return;
     }
+    // BDS 账号密码不匹配时继续尝试独立端本地账号，不能直接判定登录失败。
     const user = (store.users || []).find((u) => u.username === username);
     if (!user || !verifyPassword(password, user)) {
       noteLoginFail(req);
@@ -945,14 +1110,15 @@ async function handleApi(req, res, url) {
       json(res, 200, { ok: true, data: { snbt, size: snbt.length } });
       return;
     }
-    if (pathname === "/flow") {
-      const kind = url.searchParams.get("kind") || "";
-      const xuid = url.searchParams.get("xuid") || "";
-      const limit = Math.min(Number(url.searchParams.get("limit") || 100), 500);
-      let list = store.flow;
-      if (kind) list = list.filter((e) => e.kind === kind);
-      if (xuid) list = list.filter((e) => e.xuid === xuid);
-      json(res, 200, { ok: true, data: list.slice(0, limit) });
+    if (pathname === "/flow" || pathname === "/flow/summary") {
+      const filter = flowRange(url);
+      if (pathname === "/flow/summary") {
+        json(res, 200, { ok: true, data: flowSummary(filter) });
+        return;
+      }
+      const page = Number(url.searchParams.get("page") || 1);
+      const pageSize = Number(url.searchParams.get("pageSize") || url.searchParams.get("limit") || FLOW_PAGE_SIZE);
+      json(res, 200, { ok: true, data: flowQuery(filter, page, pageSize) });
       return;
     }
     if (pathname === "/audit") {

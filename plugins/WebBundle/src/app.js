@@ -63,6 +63,13 @@ function createApp() {
 
         app.web.start();
         app.external.start();
+        setTimeout(() => {
+            try {
+                app.store.pruneFlow();
+            } catch (e) {
+                log("warn", "物品去向保留期清理失败: " + e.message);
+            }
+        }, 5000);
         try {
             if (typeof ll !== "undefined" && ll && typeof ll.onUnload === "function") {
                 ll.onUnload(() => app.shutdown());

@@ -247,7 +247,9 @@ export const logisticsModule = {
             drop: (player, item) => record(player, "drop", "out", item, null),
             pickup: (player, entity, item) => record(player, "pickup", "in", item, entity),
             craft: craftImpl,
-            list: (filter, limit) => app.store.listFlow(filter, limit)
+            list: (filter, limit) => app.store.listFlow(filter, limit),
+            page: (filter, options) => app.store.queryFlow(filter, options),
+            summary: (filter) => app.store.aggregateFlow(filter)
         };
     }
 };

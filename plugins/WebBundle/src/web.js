@@ -296,6 +296,34 @@ class Web {
         return Array.isArray(v) ? v[0] : v;
     }
 
+    timeMs(value, fallback) {
+        if (value === undefined || value === null || value === "") return fallback;
+        const n = Number(value);
+        if (Number.isFinite(n) && n > 0) return n;
+        const parsed = Date.parse(String(value));
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    flowFilter(req) {
+        const now = Date.now();
+        let from = this.timeMs(this.query(req, "from", ""), now - 30 * 24 * 3600 * 1000);
+        let to = this.timeMs(this.query(req, "to", ""), now);
+        if (from > to) {
+            const swap = from;
+            from = to;
+            to = swap;
+        }
+        return {
+            from: from,
+            to: to,
+            xuid: String(this.query(req, "xuid", "") || ""),
+            kind: String(this.query(req, "kind", "") || ""),
+            direction: String(this.query(req, "direction", "") || ""),
+            item: String(this.query(req, "item", "") || ""),
+            q: String(this.query(req, "q", "") || "").trim()
+        };
+    }
+
     handleApi(req, res) {
         if (req.method === "OPTIONS") {
             res.status = 204;
@@ -551,16 +579,16 @@ class Web {
             return;
         }
 
-        if (path === "/flow") {
+        if (path === "/flow" || path === "/flow/summary") {
             if (!this.can(identity, "flow.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 flow.read" } }); return; }
-            const filter = {
-                xuid: this.query(req, "xuid", ""),
-                kind: this.query(req, "kind", ""),
-                direction: this.query(req, "direction", ""),
-                item: this.query(req, "item", "")
-            };
-            const list = app.logistics.list(filter, Number(this.query(req, "limit", 100)));
-            this.sendJson(res, 200, { ok: true, data: list });
+            const filter = this.flowFilter(req);
+            if (path === "/flow/summary") {
+                this.sendJson(res, 200, { ok: true, data: app.logistics.summary(filter) });
+                return;
+            }
+            const page = Number(this.query(req, "page", 1));
+            const pageSize = Number(this.query(req, "pageSize", this.query(req, "limit", app.store.flowPageSize)));
+            this.sendJson(res, 200, { ok: true, data: app.logistics.page(filter, { page: page, pageSize: pageSize }) });
             return;
         }
 

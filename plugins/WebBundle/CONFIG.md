@@ -35,6 +35,11 @@ plugins/WebBundle/data/config.json
     "dbPath": "plugins/WebBundle/data/db",
     "indexLimit": 3000
   },
+  "flow": {
+    "retentionDays": 30,
+    "maxEvents": 100000,
+    "pageSize": 50
+  },
   "external": {
     "enabled": true,
     "url": "http://127.0.0.1:8080",
@@ -75,6 +80,14 @@ plugins/WebBundle/data/config.json
 | `driver` | `kv`（LevelDB）或 `memory` |
 | `dbPath` | 数据库路径 |
 | `indexLimit` | 每个玩家的快照索引上限 |
+
+### flow
+
+| 字段 | 说明 |
+| --- | --- |
+| `retentionDays` | 物品去向保留天数，默认 `30` |
+| `maxEvents` | 物品去向最大事件数，默认 `100000` |
+| `pageSize` | 网页分页大小，默认 `50` |
 
 ### external
 

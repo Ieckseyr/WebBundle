@@ -25,6 +25,11 @@ const DEFAULT_CONFIG = {
         dbPath: DATA_DIR + "/db",
         indexLimit: 3000
     },
+    flow: {
+        retentionDays: 30,
+        maxEvents: 100000,
+        pageSize: 50
+    },
     external: {
         enabled: false,
         url: "",

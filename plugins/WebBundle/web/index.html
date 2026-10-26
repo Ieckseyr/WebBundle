@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebBundle 网页查包</title>
-  <link rel="stylesheet" href="app.css?v=121">
+  <link rel="stylesheet" href="app.css?v=122">
 </head>
 <body class="login-active">
   <div id="login" class="login-screen">
@@ -249,20 +249,44 @@
     <section id="view-flow" class="view page-view">
       <div class="page-head">
         <div><span class="micro">物品去向 / ITEM FLOW</span><h1>物品去向</h1></div>
-        <div class="page-head-side"><span class="micro">筛选范围</span><b>最近 24 小时</b></div>
+        <div class="page-head-side"><span class="micro">筛选范围</span><b id="flow-range-label">最近 24 小时</b></div>
       </div>
-      <div class="filter-bar">
-        <button class="chip active" data-flow-filter="all">全部</button>
-        <button class="chip" data-flow-filter="drop">丢弃</button>
-        <button class="chip" data-flow-filter="pickup">拾取</button>
-        <button class="chip" data-flow-filter="craft">合成</button>
-        <input id="flow-search" placeholder="搜索玩家 / 物品 ID">
-        <span class="filter-count" id="flow-count">--</span>
+      <div class="flow-toolbar">
+        <div class="filter-bar flow-filter-row">
+          <button class="chip active" data-flow-filter="all">全部</button>
+          <button class="chip" data-flow-filter="drop">丢弃</button>
+          <button class="chip" data-flow-filter="pickup">拾取</button>
+          <button class="chip" data-flow-filter="craft">合成</button>
+          <input id="flow-search" placeholder="搜索玩家 / 物品 ID">
+          <span class="filter-count" id="flow-count">--</span>
+        </div>
+        <div class="flow-range-row">
+          <label class="flow-field"><span>开始</span><input id="flow-from" type="datetime-local"></label>
+          <label class="flow-field"><span>结束</span><input id="flow-to" type="datetime-local"></label>
+          <label class="flow-field"><span>玩家</span><select id="flow-player"><option value="">全服玩家</option></select></label>
+          <label class="flow-field"><span>快捷</span><select id="flow-span">
+            <option value="1">最近 24 小时</option>
+            <option value="7">最近 7 天</option>
+            <option value="30">最近 30 天</option>
+          </select></label>
+          <button id="flow-apply" class="btn dark" type="button">查询</button>
+          <button id="flow-reset" class="btn line" type="button">重置</button>
+          <button id="flow-summary-btn" class="btn signal" type="button">区间总结</button>
+        </div>
       </div>
-      <div class="data-table">
+      <div class="data-table flow-table">
         <div class="table-head"><span>时间</span><span>玩家</span><span>方向</span><span>物品</span><span>数量</span><span>来源</span><span>坐标</span></div>
         <div id="flow-rows"></div>
       </div>
+      <div class="flow-pager">
+        <button id="flow-prev" class="btn line" type="button">上一页</button>
+        <span id="flow-page-label" class="mono">第 1 页</span>
+        <button id="flow-next" class="btn line" type="button">下一页</button>
+      </div>
+      <section id="flow-summary-panel" class="dash-card flow-summary-panel hidden">
+        <div class="card-head"><span class="micro">区间流动总结</span><button id="flow-summary-close" class="btn line" type="button">收起</button></div>
+        <div id="flow-summary-body"></div>
+      </section>
     </section>
 
     <section id="view-command" class="view page-view">
@@ -531,6 +555,6 @@
   <div id="item-tip" class="item-tip hidden"></div>
   <div id="toast" class="toast"></div>
   <script src="pbkdf2.js?v=2"></script>
-  <script src="app.js?v=121"></script>
+  <script src="app.js?v=122"></script>
 </body>
 </html>

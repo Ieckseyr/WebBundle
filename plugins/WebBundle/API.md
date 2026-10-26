@@ -104,7 +104,8 @@ Authorization: Bearer <web.token>
 | GET | `/snapshots` | 全服备份元数据 |
 | GET | `/snapshots/:id` | 单份备份 |
 | GET | `/nbt/:hash` | 完整 SNBT 大对象 |
-| GET | `/flow` | 物品去向 |
+| GET | `/flow` | 物品去向，分页与时间范围 |
+| GET | `/flow/summary` | 区间合并总结 |
 | GET | `/audit` | 操作记录 |
 | GET | `/audit/verify` | 强制全量哈希链校验 |
 | GET | `/tasks` | 任务列表 |
@@ -153,6 +154,69 @@ GET /api/v1/players/:xuid/snapshots?limit=500
 ```
 
 用于查包页右上角的玩家备份侧边栏。
+
+### 2.3 物品去向分页
+
+```http
+GET /api/v1/flow?from=1790000000000&to=1790086400000&page=1&pageSize=50
+```
+
+可选参数：
+
+```text
+from      起始毫秒，默认最近 30 天
+to        结束毫秒，默认当前
+page      页码，从 1 开始
+pageSize  1–200，默认 50
+xuid      单玩家，不传为全服
+kind      drop / pickup / craft
+direction in / out
+q         玩家名、XUID、物品 ID
+item      精确物品 ID
+```
+
+返回分页对象：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "items": [],
+    "page": 1,
+    "pageSize": 50,
+    "hasMore": true,
+    "from": 1790000000000,
+    "to": 1790086400000
+  }
+}
+```
+
+物品去向默认保留 30 天，索引上限由 `flow.maxEvents` 控制。
+
+### 2.4 区间流动总结
+
+```http
+GET /api/v1/flow/summary?from=...&to=...&xuid=&q=
+```
+
+同样接受 `item` / `kind` / `direction` / `xuid` 过滤。
+
+返回：
+
+```text
+from / to / firstTs / lastTs
+totals: events / count / inCount / outCount
+players[]: xuid / name / events / count / inCount / outCount / items[]
+items[]: t / direction / count / events / firstTs / lastTs
+```
+
+`items` 是全服同物品合并；`players[].items` 是该玩家同物品合并。前端用它渲染：
+
+```text
+某时间段，全服丢失 xxx 件、获得 xxx 件
+玩家 A：丢失 x 件 / 获得 y 件
+玩家 A · 石头 · 丢失 64 件（12 次，首次 ...，末次 ...）
+```
 
 ---
 
