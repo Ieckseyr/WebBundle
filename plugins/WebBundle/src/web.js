@@ -70,8 +70,13 @@ class Web {
     }
 
     stop() {
+        const server = this.server;
+        // 先断开 JS 对 HttpServer 包装对象的引用；否则包装对象会拖到
+        // QuickJS 运行时释放后才析构，LSE 的 HttpServerCallback 会在无运行时
+        // 的情况下释放 Global<Value>，直接崩服。
+        this.server = null;
         try {
-            if (this.server && this.server.isRunning()) this.server.stop();
+            if (server && server.isRunning()) server.stop();
         } catch (e) {
             // 忽略
         }
