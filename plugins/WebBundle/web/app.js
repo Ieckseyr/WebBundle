@@ -2399,8 +2399,8 @@
       document.querySelectorAll("[data-flow-filter]").forEach((b) => b.classList.toggle("active", b.dataset.flowFilter === "all"));
       $("flow-search").value = "";
       $("flow-player").value = "";
-      $("flow-span").value = "1";
-      setFlowRangeDays(1);
+      $("flow-span").value = "30";
+      setFlowRangeDays(30);
       loadFlow(true);
     });
     $("flow-prev").addEventListener("click", () => {
@@ -2462,7 +2462,8 @@
   }
 
   bind();
-  setFlowRangeDays(1);
+  $("flow-span").value = "30";
+  setFlowRangeDays(30);
   applyLoginMode();
   initContours();
   updateRailIndicator();
