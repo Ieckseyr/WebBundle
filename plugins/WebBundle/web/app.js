@@ -1459,6 +1459,10 @@
     if (reset !== false) state.flowPage = 1;
     try {
       const filter = flowFilterState();
+      if (filter.from && filter.to && filter.from >= filter.to) {
+        toast("开始时间必须早于结束时间");
+        return;
+      }
       const data = await api("/flow?" + flowQueryParams(filter, state.flowPage));
       state.flow = Array.isArray(data && data.items) ? data.items : [];
       state.flowPage = Number(data && data.page || state.flowPage);
@@ -2393,8 +2397,14 @@
       setFlowRangeDays($("flow-span").value);
       loadFlow(true);
     });
-    $("flow-from").addEventListener("change", updateFlowRangeLabel);
-    $("flow-to").addEventListener("change", updateFlowRangeLabel);
+    $("flow-from").addEventListener("change", () => {
+      updateFlowRangeLabel();
+      loadFlow(true);
+    });
+    $("flow-to").addEventListener("change", () => {
+      updateFlowRangeLabel();
+      loadFlow(true);
+    });
     $("flow-reset").addEventListener("click", () => {
       document.querySelectorAll("[data-flow-filter]").forEach((b) => b.classList.toggle("active", b.dataset.flowFilter === "all"));
       $("flow-search").value = "";
