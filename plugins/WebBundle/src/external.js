@@ -34,7 +34,7 @@ class External {
         this.push("register", {
             serverId: this.app.config.serverId,
             name: this.app.config.serverName || "",
-            version: "1.1.0",
+            version: "1.2.0",
             lastAckSeq: 0
         });
         this.pushExtensions();

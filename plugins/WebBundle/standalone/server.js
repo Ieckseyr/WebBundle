@@ -8,6 +8,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 
 const PUBLIC = path.resolve(__dirname, "..", "web");
 const JSON_DIR = path.resolve(__dirname, "..", "src", "json");
@@ -38,7 +39,10 @@ function loadConfig() {
 
 const config = loadConfig();
 const dataFile = path.resolve(path.isAbsolute(config.dataPath) ? config.dataPath : path.join(__dirname, config.dataPath));
-const ZXDASH_ROOT = path.resolve(__dirname, "..", "..", "..", "plugins", "ZXDash", "unmined-web");
+const MAP_ROOT = path.resolve(__dirname, "..", "data", "map");
+const MAP_RENDERER = path.resolve(__dirname, "..", "bin", "WebBundleMapRenderer.exe");
+const SERVER_ROOT = path.resolve(__dirname, "..", "..", "..");
+const mapRender = { active: false, startedAt: 0, finishedAt: 0, exitCode: null, output: "" };
 fs.mkdirSync(path.dirname(dataFile), { recursive: true });
 
 function emptyStore() {
@@ -615,7 +619,7 @@ function meta(session) {
   return {
     serverId: store.server.serverId || "external",
     serverName: store.server.name || "BDS",
-    version: "1.1.0",
+    version: "1.2.0",
     mode: online ? "external" : "cold",
     server: { online: online, lastSeen: store.server.lastSeen || 0, shutdownAt: store.server.shutdownAt || 0 },
     dataAsOf: store.server.shutdownAt || store.server.lastSeen || 0,
@@ -1099,6 +1103,36 @@ async function handleApi(req, res, url) {
       json(res, 200, { ok: true, data: rows });
       return;
     }
+    if (pathname === "/map/render") {
+      if (!session || session.role !== "admin") {
+        json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有管理员可以渲染地图" } });
+        return;
+      }
+      if (mapRender.active) {
+        json(res, 409, { ok: false, error: { code: "BUSY", message: "地图正在渲染" } });
+        return;
+      }
+      let level = "Bedrock level";
+      try {
+        const props = fs.readFileSync(path.join(SERVER_ROOT, "server.properties"), "utf8");
+        const line = props.split(String.fromCharCode(10)).find((entry) => entry.trim().startsWith("level-name="));
+        if (line) level = line.slice(line.indexOf("=") + 1).trim() || level;
+      } catch (e) { level = "Bedrock level"; }
+      mapRender.active = true; mapRender.startedAt = Date.now(); mapRender.finishedAt = 0; mapRender.exitCode = null; mapRender.output = "";
+      try {
+        const child = spawn(MAP_RENDERER, ["--db", path.join(SERVER_ROOT, "worlds", level, "db"), "--output", MAP_ROOT, "--dim", "0,1,2", "--threads", "0", "--speed", "2"], { cwd: SERVER_ROOT, windowsHide: true });
+        const collect = (chunk) => { mapRender.output = (mapRender.output + chunk.toString()).slice(-4000); };
+        child.stdout.on("data", collect);
+        child.stderr.on("data", collect);
+        child.on("error", (error) => { mapRender.active = false; mapRender.output = error.message; });
+        child.on("close", (code) => { mapRender.active = false; mapRender.exitCode = code; mapRender.finishedAt = Date.now(); });
+        json(res, 200, { ok: true, data: mapRender });
+      } catch (e) {
+        mapRender.active = false; mapRender.output = e.message;
+        json(res, 500, { ok: false, error: { code: "RENDER_FAILED", message: e.message } });
+      }
+      return;
+    }
     if (pathname === "/accounts") {
       const owner = (store.users || [])[0];
       if (!owner || session.username !== owner.username) {
@@ -1156,7 +1190,7 @@ async function handleApi(req, res, url) {
         if (Number(snap.ts || 0) >= start) snapshotsToday += 1;
       }
       json(res, 200, { ok: true, data: {
-        server: { id: store.server.serverId || "external", name: store.server.name || "BDS", online: meta().server.online, version: "1.1.0" },
+        server: { id: store.server.serverId || "external", name: store.server.name || "BDS", online: meta().server.online, version: "1.2.0" },
         counts: {
           playersOnline: online, playersTotal: players.length,
           snapshotsToday, flowToday: todayFlow.length,
@@ -1185,8 +1219,8 @@ async function handleApi(req, res, url) {
     }
     if (pathname === "/modules") {
       json(res, 200, { ok: true, data: [
-        { id: "command", name: "网页指令", version: "1.1.0" },
-        { id: "logistics", name: "物流信息", version: "1.1.0" }
+        { id: "command", name: "网页指令", version: "1.2.0" },
+        { id: "logistics", name: "物流信息", version: "1.2.0" }
       ] });
       return;
     }
@@ -1268,14 +1302,19 @@ async function handleApi(req, res, url) {
       json(res, 200, { ok: true, data: { snbt, size: snbt.length } });
       return;
     }
+    if (pathname === "/map/render/status") {
+      json(res, 200, { ok: true, data: mapRender });
+      return;
+    }
     if (pathname === "/map/meta") {
-      let mapConfig = {};
-      try { mapConfig = JSON.parse(fs.readFileSync(path.join(ZXDASH_ROOT, "..", "map_config.json"), "utf8")); } catch (e) { mapConfig = {}; }
+      let mapMeta = {};
+      try { mapMeta = JSON.parse(fs.readFileSync(path.join(MAP_ROOT, "render-meta.json"), "utf8")); } catch (e) { mapMeta = {}; }
       json(res, 200, { ok: true, data: {
         tileUrl: "/api/v1/map/tiles/{dim}/{zoom}/{tx}/{ty}",
-        zoomIn: Number(mapConfig.zoomIn || 2),
-        zoomOut: Number(mapConfig.zoomOut || -7),
-        lastRender: Number(mapConfig.lastRender || 0),
+        zoomIn: 2,
+        zoomOut: -7,
+        lastRender: Number(mapMeta.renderedAt || 0),
+        renderActive: !!mapRender.active,
         dimensions: [
           { id: 0, tile: "overworld", name: "主世界" },
           { id: 1, tile: "nether", name: "下界" },
@@ -1319,8 +1358,8 @@ async function handleApi(req, res, url) {
     if (mapTile) {
       const folder = mapTile[1] === "nether" ? "nether" : (mapTile[1] === "the_end" ? "the_end" : "overworld");
       const level = Math.max(0, Math.min(20, Number(mapTile[2])));
-      const tileFile = path.join(ZXDASH_ROOT, "tiles", folder, String(level), mapTile[3] + "_" + mapTile[4] + ".png");
-      if (!tileFile.startsWith(path.join(ZXDASH_ROOT, "tiles"))) { res.writeHead(400); res.end(); return; }
+      const tileFile = path.join(MAP_ROOT, "tiles", folder, String(level), mapTile[3] + "_" + mapTile[4] + ".png");
+      if (!tileFile.startsWith(path.join(MAP_ROOT, "tiles"))) { res.writeHead(400); res.end(); return; }
       if (!fs.existsSync(tileFile)) { res.writeHead(404); res.end(); return; }
       return sendFile(res, tileFile, "public, max-age=3600");
     }

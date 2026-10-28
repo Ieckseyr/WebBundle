@@ -19,3 +19,7 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+
+# Map renderer build output
+plugins/WebBundle/renderer/build/
+plugins/WebBundle/renderer/.xmake/

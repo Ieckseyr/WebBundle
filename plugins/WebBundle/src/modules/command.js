@@ -4,7 +4,7 @@
 export const commandModule = {
     id: "command",
     name: "网页指令",
-    version: "1.1.0",
+    version: "1.2.0",
     setup(ctx) {
         function execute(payload) {
             const cmd = String((payload && payload.command) || "").trim();

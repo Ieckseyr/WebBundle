@@ -5,6 +5,9 @@ import { log, readJson, JSON_DIR } from "./core.js";
 import { sha256Hex } from "./sha256.js";
 import { validUsername } from "./auth.js";
 
+const MAP_ROOT = "plugins/WebBundle/data/map";
+const MAP_RENDERER = "plugins/WebBundle/bin/WebBundleMapRenderer.exe";
+
 const MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -61,6 +64,7 @@ class Web {
         const storedAccounts = app.store.get("auth:accounts", null);
         this.accounts = Array.isArray(storedAccounts) ? storedAccounts.slice() : (this.account ? [Object.assign({}, this.account, { owner: true })] : []);
         if (this.accounts.length && !this.accounts.some((entry) => entry.owner)) this.accounts[0].owner = true;
+        this.mapRender = { active: false, startedAt: 0, finishedAt: 0, exitCode: null, output: "" };
         this._overviewCache = null;
     }
 
@@ -450,6 +454,63 @@ class Web {
         }
     }
 
+    mapLevelName() {
+        let level = "Bedrock level";
+        try {
+            if (File.exists("server.properties")) {
+                const text = String(File.readFrom("server.properties") || "");
+                for (const line of text.split(String.fromCharCode(10))) {
+                    const clean = line.trim();
+                    if (clean.indexOf("level-name=") === 0) {
+                        level = clean.slice(11).trim() || level;
+                        break;
+                    }
+                }
+            }
+        } catch (e) { level = "Bedrock level"; }
+        return level;
+    }
+
+    mapMeta() {
+        try {
+            const file = MAP_ROOT + "/render-meta.json";
+            if (!File.exists(file)) return {};
+            return JSON.parse(String(File.readFrom(file) || "{}")) || {};
+        } catch (e) { return {}; }
+    }
+
+    startMapRender(identity) {
+        if (this.mapRender.active) return false;
+        if (!File.exists(MAP_RENDERER)) {
+            this.mapRender.output = "renderer missing";
+            return false;
+        }
+        const db = "worlds/" + this.mapLevelName() + "/db";
+        const command = '"' + MAP_RENDERER + '" --db "' + db + '" --output "' + MAP_ROOT + '" --dim 0,1,2 --threads 0 --speed 2';
+        this.mapRender = { active: true, startedAt: Date.now(), finishedAt: 0, exitCode: null, output: command };
+        const self = this;
+        try {
+            const started = system.newProcess(command, (code, output) => {
+                self.mapRender.active = false;
+                self.mapRender.finishedAt = Date.now();
+                self.mapRender.exitCode = Number(code);
+                self.mapRender.output = String(output || "").slice(-4000);
+                log(Number(code) === 0 ? "info" : "warn", "地图渲染结束 code=" + code + String.fromCharCode(10) + self.mapRender.output);
+            }, 3600000);
+            if (!started) {
+                this.mapRender.active = false;
+                this.mapRender.output = "renderer start failed";
+                return false;
+            }
+            log("info", "地图渲染已启动: " + db);
+            return true;
+        } catch (e) {
+            this.mapRender.active = false;
+            this.mapRender.output = e.message;
+            return false;
+        }
+    }
+
     apiGet(path, req, res, identity) {
         const app = this.app;
         if (path === "/meta" || path === "/health") {
@@ -458,7 +519,7 @@ class Web {
                 data: {
                     serverId: app.config.serverId,
                     serverName: app.config.serverName || "BDS",
-                    version: "1.1.0",
+                    version: "1.2.0",
                     mode: "embedded",
                     server: { online: true, lastSeen: Date.now() },
                     dataAsOf: Date.now(),
@@ -681,15 +742,21 @@ class Web {
             return;
         }
 
+        if (path === "/map/render/status") {
+            if (!this.can(identity, "map.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 map.read" } }); return; }
+            this.sendJson(res, 200, { ok: true, data: this.mapRender });
+            return;
+        }
+
         if (path === "/map/meta") {
             if (!this.can(identity, "map.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 map.read" } }); return; }
-            let mapConfig = {};
-            try { mapConfig = readJson("plugins/ZXDash/map_config.json", {}); } catch (e) { mapConfig = {}; }
+            const mapMeta = this.mapMeta();
             this.sendJson(res, 200, { ok: true, data: {
                 tileUrl: "/api/v1/map/tiles/{dim}/{zoom}/{tx}/{ty}",
-                zoomIn: Number(mapConfig.zoomIn || 2),
-                zoomOut: Number(mapConfig.zoomOut || -7),
-                lastRender: Number(mapConfig.lastRender || 0),
+                zoomIn: 2,
+                zoomOut: -7,
+                lastRender: Number(mapMeta.renderedAt || 0),
+                renderActive: !!this.mapRender.active,
                 dimensions: [
                     { id: 0, tile: "overworld", name: "主世界" },
                     { id: 1, tile: "nether", name: "下界" },
@@ -779,7 +846,7 @@ class Web {
             if (!this.can(identity, "map.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 map.read" } }); return; }
             const folder = m[1] === "nether" ? "nether" : (m[1] === "the_end" ? "the_end" : "overworld");
             const zoom = Math.max(0, Math.min(20, Number(m[2])));
-            const file = "plugins/ZXDash/unmined-web/tiles/" + folder + "/" + zoom + "/" + m[3] + "_" + m[4] + ".png";
+            const file = MAP_ROOT + "/tiles/" + folder + "/" + zoom + "/" + m[3] + "_" + m[4] + ".png";
             try {
                 if (!File.exists(file)) { res.status = 404; res.write(""); return; }
                 const data = File.readFrom(file, true);
@@ -915,6 +982,21 @@ class Web {
             return;
         }
         const app = this.app;
+        if (path === "/map/render") {
+            if (identity.role !== "admin" && !this.isOwner(identity)) {
+                this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有管理员可以渲染地图" } });
+                return;
+            }
+            if (this.mapRender.active) {
+                this.sendJson(res, 409, { ok: false, error: { code: "BUSY", message: "地图正在渲染" } });
+                return;
+            }
+            const started = this.startMapRender(identity);
+            this.sendJson(res, started ? 200 : 500, started
+                ? { ok: true, data: this.mapRender }
+                : { ok: false, error: { code: "RENDER_FAILED", message: this.mapRender.output || "渲染器启动失败" } });
+            return;
+        }
         if (path === "/accounts") {
             if (!this.isOwner(identity)) {
                 this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有初始管理员可以添加账号" } });
@@ -1036,7 +1118,7 @@ class Web {
                 id: app.config.serverId,
                 name: app.config.serverName || "BDS",
                 online: true,
-                version: "1.1.0"
+                version: "1.2.0"
             },
             counts: {
                 playersOnline: players.length,

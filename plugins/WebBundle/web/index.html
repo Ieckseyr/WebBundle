@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebBundle 网页查包</title>
-  <link rel="stylesheet" href="app.css?v=1.1.0">
+  <link rel="stylesheet" href="app.css?v=1.2.0">
 </head>
 <body class="login-active">
   <div id="login" class="login-screen">
@@ -249,7 +249,7 @@
     <section id="view-map" class="view page-view">
       <div class="page-head">
         <div><span class="micro">容器地图 / CONTAINER MAP</span><h1>容器地图</h1></div>
-        <div class="page-head-side"><span class="micro">地图来源</span><b>ZXDash · Unmined</b><span id="map-status" class="micro">加载中</span></div>
+        <div class="page-head-side"><span class="micro">地图来源</span><b>WebBundle · 内置渲染</b><span id="map-status" class="micro">加载中</span></div>
       </div>
       <div class="map-toolbar">
         <label class="flow-field"><span>维度</span><select id="map-dim"><option value="0">主世界</option><option value="1">下界</option><option value="2">末地</option></select></label>
@@ -260,6 +260,7 @@
         <button id="map-live" class="btn line" type="button">回到实时</button>
         <button id="map-zoom-in" class="btn line" type="button">＋</button>
         <button id="map-zoom-out" class="btn line" type="button">－</button>
+        <button id="map-render" class="btn line" type="button">渲染地图</button>
         <label class="map-check"><input id="map-crosshair" type="checkbox"> 坐标十字线</label>
         <span id="map-count" class="filter-count">--</span>
       </div>
@@ -622,6 +623,6 @@
   <script src="pbkdf2.js?v=2"></script>
   <script src="vendor/three.min.js?v=1"></script>
   <script src="vendor/OrbitControls.js?v=1"></script>
-  <script src="app.js?v=1.1.0"></script>
+  <script src="app.js?v=1.2.0"></script>
 </body>
 </html>

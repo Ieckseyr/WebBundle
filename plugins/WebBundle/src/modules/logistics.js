@@ -7,7 +7,7 @@ import { log } from "../core.js";
 export const logisticsModule = {
     id: "logistics",
     name: "物品去向记录",
-    version: "1.1.0",
+    version: "1.2.0",
     setup(ctx) {
         const app = ctx.app;
         let seq = 0;

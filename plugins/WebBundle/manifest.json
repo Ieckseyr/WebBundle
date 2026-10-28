@@ -2,7 +2,7 @@
   "name": "WebBundle",
   "entry": "index.js",
   "type": "lse-quickjs",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "WebBundle contributors",
   "description": "网页查包：背包查看、完整 NBT、分钟备份、离线修改、物流、网页指令",
   "dependencies": [

@@ -107,7 +107,9 @@ Authorization: Bearer <web.token>
 | GET | `/flow` | 物品去向，分页与时间范围 |
 | GET | `/flow/summary` | 区间合并总结 |
 | GET | `/map/meta` | 地图瓦片/维度/聚合配置 |
-| GET | `/map/tiles/:dim/:zoom/:tx/:ty` | ZXDash Unmined 瓦片 |
+| POST | `/map/render` | 启动内置地图渲染 |
+| GET | `/map/render/status` | 地图渲染状态 |
+| GET | `/map/tiles/:dim/:zoom/:tx/:ty` | 内置渲染器瓦片 |
 | GET | `/map/players` | 地图在线玩家位置 |
 | GET | `/map/containers` | 容器摘要/聚合点 |
 | GET | `/containers/:id` | 容器内容 |
@@ -234,7 +236,7 @@ items[]: t / direction / count / events / firstTs / lastTs
 GET /api/v1/map/meta
 ```
 
-返回 ZXDash 瓦片配置、维度、聚合半径和容器保留天数。
+返回内置渲染器瓦片配置、维度、聚合半径和容器保留天数。
 
 ### 3.2 容器摘要/聚合点
 
@@ -288,7 +290,7 @@ GET /api/v1/map/tiles/overworld/5/0/0
 读取：
 
 ```text
-plugins/ZXDash/unmined-web/tiles/<dim>/<zoom>/<tx>_<ty>.png
+plugins/WebBundle/data/map/tiles/<dim>/<zoom>/<tx>_<ty>.png
 ```
 
 ---
