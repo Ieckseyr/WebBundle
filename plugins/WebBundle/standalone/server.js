@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WebBundle contributors
-//
-// 单独挂载网页端：独立进程、独立数据文件。
-// 它不启动 BDS，也不直接改世界存档；所有游戏内写入由插件轮询动作后执行。
 
 "use strict";
 
@@ -41,6 +38,7 @@ function loadConfig() {
 
 const config = loadConfig();
 const dataFile = path.resolve(path.isAbsolute(config.dataPath) ? config.dataPath : path.join(__dirname, config.dataPath));
+const ZXDASH_ROOT = path.resolve(__dirname, "..", "..", "..", "plugins", "ZXDash", "unmined-web");
 fs.mkdirSync(path.dirname(dataFile), { recursive: true });
 
 function emptyStore() {
@@ -50,6 +48,9 @@ function emptyStore() {
     snapshots: {},
     snapshotIndex: {},
     flow: [],
+    containers: {},
+    containerObs: {},
+    containerDay: {},
     tasks: {},
     nbt: {},
     audit: [],
@@ -88,6 +89,11 @@ const FLOW_RETENTION_DAYS = 30;
 const FLOW_MAX_EVENTS = 100000;
 const FLOW_PAGE_SIZE = 50;
 let lastFlowPrune = 0;
+
+function containerDayKey(ts) {
+  const d = new Date(Number(ts || Date.now()));
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
 
 function flowTime(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -234,9 +240,123 @@ function flowSummary(filter) {
   };
 }
 
+function containerSummary(record, at) {
+  if (!record) return null;
+  const summary = {
+    id: record.id, dim: Number(record.dim || 0), x: Number(record.x || 0), y: Number(record.y || 0), z: Number(record.z || 0),
+    type: record.type, name: record.name || record.type,
+    firstSeen: Number(record.firstSeen || 0), lastSeen: Number(record.lastSeen || 0),
+    removedAt: Number(record.removedAt || 0),
+    state: record.removedAt ? "removed" : "present",
+    currentObservationId: record.currentObservationId || "",
+    itemCount: Number(record.currentItemCount || 0),
+    size: Number(record.size || 0),
+    doubleAxis: record.doubleAxis || "",
+    pairX: record.pairX,
+    pairZ: record.pairZ,
+    pairLead: record.pairLead,
+    facing: record.facing || "",
+    observationCount: Array.isArray(record.observations) ? record.observations.length : 0
+  };
+  let obs = null;
+  if (at) {
+    const found = (record.observations || []).find((entry) => Number(entry.at || 0) <= Number(at));
+    if (found) obs = store.containerObs[found.id] || null;
+    summary.observationId = found ? found.id : "";
+    summary.observationAt = found ? found.at : 0;
+    summary.state = !found ? "unknown" : (record.removedAt && Number(at) >= Number(record.removedAt) ? "removed" : "present");
+    if (obs) summary.itemCount = Number(obs.itemCount || 0);
+  } else {
+    obs = store.containerObs[record.currentObservationId] || null;
+  }
+  if (obs && Array.isArray(obs.items)) {
+    summary.preview = obs.items.slice(0, 5).map((slot) => ({
+      t: slot.item && slot.item.t || "",
+      n: slot.item && (slot.item.meta && slot.item.meta.name || slot.item.n) || "",
+      c: Number(slot.item && slot.item.c || 1)
+    }));
+    summary.previewMore = Math.max(0, obs.items.length - summary.preview.length);
+  } else {
+    summary.preview = [];
+    summary.previewMore = 0;
+  }
+  return summary;
+}
+
+function listContainers(filter) {
+  const daySet = filter.day ? new Set(store.containerDay[filter.day] || []) : null;
+  const sizeOf = (record) => Number(record && (record.size || (record.currentObservationId && (store.containerObs[record.currentObservationId] || {}).size)) || 0);
+  const largeAt = (record, dx, dz) => {
+    if (!record || sizeOf(record) <= 27) return null;
+    const other = store.containers[`container:${record.dim}:${Number(record.x) + dx}:${record.y}:${Number(record.z) + dz}`];
+    return other && sizeOf(other) > 27 ? other : null;
+  };
+  const out = [];
+  for (const record of Object.values(store.containers || {})) {
+    if (sizeOf(record) > 27) {
+      if (largeAt(record, -1, 0)) continue;
+      if (!record.doubleAxis) record.doubleAxis = largeAt(record, 1, 0) ? "x" : "";
+    }
+    if (Number(record.dim || 0) !== Number(filter.dim || 0)) continue;
+    if (daySet && !daySet.has(record.id)) continue;
+    if (!filter.includeRemoved && record.removedAt) continue;
+    if (filter.from && Number(record.lastSeen || 0) < Number(filter.from)) continue;
+    if (filter.to && Number(record.firstSeen || 0) > Number(filter.to)) continue;
+    if (filter.bbox && (record.x < filter.bbox[0] || record.x > filter.bbox[2] || record.z < filter.bbox[1] || record.z > filter.bbox[3])) continue;
+    const summary = containerSummary(record, filter.at);
+    if (summary) out.push(summary);
+  }
+  out.sort((a, b) => b.lastSeen - a.lastSeen);
+  return out;
+}
+
+function clusterContainers(items, dim, radius) {
+  const groups = new Map();
+  for (const item of items) {
+    const gx = Math.floor(item.x / radius);
+    const gz = Math.floor(item.z / radius);
+    const key = dim + ":" + gx + ":" + gz;
+    let group = groups.get(key);
+    if (!group) {
+      group = { id: key, dim: dim, x: 0, z: 0, count: 0, items: [] };
+      groups.set(key, group);
+    }
+    group.count += 1;
+    group.x += item.x;
+    group.z += item.z;
+    group.items.push(item);
+  }
+  return Array.from(groups.values()).map((group) => Object.assign({}, group, {
+    x: Math.round(group.x / group.count),
+    z: Math.round(group.z / group.count)
+  }));
+}
+
+function mapPlayers() {
+  const out = [];
+  for (const player of Object.values(store.players || {})) {
+    if (!player) continue;
+    if (player.online === false) continue;
+    let snap = null;
+    const ids = store.snapshotIndex[player.xuid] || [];
+    for (const id of ids) {
+      if (store.snapshots[id]) { snap = store.snapshots[id]; break; }
+    }
+    const pos = snap && snap.pos;
+    if (!pos) continue;
+    out.push({
+      xuid: player.xuid,
+      name: player.name || player.xuid,
+      dim: Number(snap.dim || 0),
+      x: Number(pos.x || 0), y: Number(pos.y || 0), z: Number(pos.z || 0)
+    });
+  }
+  out.sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-CN"));
+  return out;
+}
+
 function pruneFlow(force) {
-  const current = now();
-  if (!force && lastFlowPrune && current - lastFlowPrune < 6 * 3600 * 1000) return 0;
+  const current = now();  if (!force && lastFlowPrune && current - lastFlowPrune < 6 * 3600 * 1000) return 0;
   const cutoff = current - FLOW_RETENTION_DAYS * 24 * 3600 * 1000;
   const before = Array.isArray(store.flow) ? store.flow.length : 0;
   store.flow = (store.flow || []).filter((event) => event && Number(event.ts || 0) >= cutoff);
@@ -251,6 +371,24 @@ function pruneFlow(force) {
 }
 
 pruneFlow(true);
+
+function pruneContainersStandalone() {
+  const cutoff = now() - 90 * 24 * 3600 * 1000;
+  let removed = 0;
+  for (const [id, record] of Object.entries(store.containers || {})) {
+    if (!record || !record.removedAt || Number(record.lastSeen || 0) >= cutoff) continue;
+    for (const obs of record.observations || []) delete store.containerObs[obs.id];
+    delete store.containers[id];
+    removed += 1;
+  }
+  if (removed) {
+    save();
+    console.log("[webbundle-web] 容器历史清理 " + removed + " 个（90 天）");
+  }
+  return removed;
+}
+
+pruneContainersStandalone();
 
 const sessions = new Map();
 const loginFails = new Map();
@@ -477,7 +615,7 @@ function meta(session) {
   return {
     serverId: store.server.serverId || "external",
     serverName: store.server.name || "BDS",
-    version: "1.0.0",
+    version: "1.1.0",
     mode: online ? "external" : "cold",
     server: { online: online, lastSeen: store.server.lastSeen || 0, shutdownAt: store.server.shutdownAt || 0 },
     dataAsOf: store.server.shutdownAt || store.server.lastSeen || 0,
@@ -485,6 +623,7 @@ function meta(session) {
     role: session ? session.role || "admin" : "admin",
     permissions: session ? (session.permissions || []) : ROLE_PERMISSIONS.admin,
     username: session ? session.username || "" : "",
+    owner: !!(session && (store.users || [])[0] && session.username === (store.users || [])[0].username),
     capabilities: ["inventory.live", "snapshot", "nbt", "flow", "command", "actions", "offline.edit", "audit"],
     live: { transport: "poll", intervalMs: 2000 },
     limits: { pageSize: 200 }
@@ -648,6 +787,22 @@ async function handlePush(req, res, url) {
     json(res, 200, { ok: true });
     return;
   }
+  if (pathname === "/push/v1/container") {
+    const record = body.container;
+    const observation = body.observation;
+    if (!record || !record.id) { json(res, 400, { ok: false, error: { code: "VALIDATION", message: "container required" } }); return; }
+    store.containers[record.id] = record;
+    if (observation && observation.id) {
+      store.containerObs[observation.id] = observation;
+      const day = containerDayKey(observation.at);
+      const list = Array.isArray(store.containerDay[day]) ? store.containerDay[day] : [];
+      if (list.indexOf(record.id) < 0) list.unshift(record.id);
+      store.containerDay[day] = list.slice(0, 100000);
+    }
+    save();
+    json(res, 200, { ok: true });
+    return;
+  }
   if (pathname === "/push/v1/audit") {
     for (const event of body.items || []) {
       if (!event || !event.seq) continue;
@@ -789,7 +944,6 @@ async function handleAuth(req, res, url) {
       json(res, 409, { ok: false, error: { code: "SETUP_REQUIRED", message: "请先设置管理员账号" } });
       return;
     }
-    // BDS 账号密码不匹配时继续尝试独立端本地账号，不能直接判定登录失败。
     const user = (store.users || []).find((u) => u.username === username);
     if (!user || !verifyPassword(password, user)) {
       noteLoginFail(req);
@@ -836,6 +990,8 @@ async function handleApi(req, res, url) {
     return;
   }
   const pathname = url.pathname.replace(/^\/api\/v1/, "");
+  const hasPermission = (permission) => session.role === "admin" || (session.permissions || []).includes(permission);
+  const deny = (permission) => json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 " + permission + " 权限" } });
   if (req.method === "GET") {
     if (pathname === "/meta" || pathname === "/health") {
       json(res, 200, { ok: true, data: meta(session) });
@@ -877,7 +1033,7 @@ async function handleApi(req, res, url) {
     if (pathname === "/items/search") {
       const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
       let table = { items: {}, english: {} };
-      try { table = JSON.parse(fs.readFileSync(path.join(JSON_DIR, "item-translations.json"), "utf8")); } catch (e) { /* 空表 */ }
+      try { table = JSON.parse(fs.readFileSync(path.join(JSON_DIR, "item-translations.json"), "utf8")); } catch (e) {  }
       const out = [];
       for (const [id, name] of Object.entries(table.items || {})) {
         if (q && !id.toLowerCase().includes(q) && !String(name).toLowerCase().includes(q)) continue;
@@ -899,7 +1055,7 @@ async function handleApi(req, res, url) {
     if (pathname === "/items/search") {
       const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
       let table = { items: {}, english: {} };
-      try { table = JSON.parse(fs.readFileSync(path.join(JSON_DIR, "item-translations.json"), "utf8")); } catch (e) { /* 空表 */ }
+      try { table = JSON.parse(fs.readFileSync(path.join(JSON_DIR, "item-translations.json"), "utf8")); } catch (e) {  }
       const out = [];
       for (const [id, name] of Object.entries(table.items || {})) {
         if (q && !id.toLowerCase().includes(q) && !String(name).toLowerCase().includes(q)) continue;
@@ -944,16 +1100,18 @@ async function handleApi(req, res, url) {
       return;
     }
     if (pathname === "/accounts") {
-      if (!(session.role === "admin" || (session.permissions || []).includes("accounts.manage"))) {
-        json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少账号管理权限" } });
+      const owner = (store.users || [])[0];
+      if (!owner || session.username !== owner.username) {
+        json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有初始管理员可以管理账号" } });
         return;
       }
       json(res, 200, { ok: true, data: (store.users || []).map(publicUser) });
       return;
     }
     if (pathname === "/accounts") {
-      if (!(session.role === "admin" || (session.permissions || []).includes("accounts.manage"))) {
-        json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少账号管理权限" } });
+      const owner = (store.users || [])[0];
+      if (!owner || session.username !== owner.username) {
+        json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有初始管理员可以管理账号" } });
         return;
       }
       json(res, 200, { ok: true, data: (store.users || []).map(publicUser) });
@@ -998,7 +1156,7 @@ async function handleApi(req, res, url) {
         if (Number(snap.ts || 0) >= start) snapshotsToday += 1;
       }
       json(res, 200, { ok: true, data: {
-        server: { id: store.server.serverId || "external", name: store.server.name || "BDS", online: meta().server.online, version: "1.0.0" },
+        server: { id: store.server.serverId || "external", name: store.server.name || "BDS", online: meta().server.online, version: "1.1.0" },
         counts: {
           playersOnline: online, playersTotal: players.length,
           snapshotsToday, flowToday: todayFlow.length,
@@ -1027,8 +1185,8 @@ async function handleApi(req, res, url) {
     }
     if (pathname === "/modules") {
       json(res, 200, { ok: true, data: [
-        { id: "command", name: "网页指令", version: "1.0.0" },
-        { id: "logistics", name: "物流信息", version: "1.0.0" }
+        { id: "command", name: "网页指令", version: "1.1.0" },
+        { id: "logistics", name: "物流信息", version: "1.1.0" }
       ] });
       return;
     }
@@ -1110,6 +1268,82 @@ async function handleApi(req, res, url) {
       json(res, 200, { ok: true, data: { snbt, size: snbt.length } });
       return;
     }
+    if (pathname === "/map/meta") {
+      let mapConfig = {};
+      try { mapConfig = JSON.parse(fs.readFileSync(path.join(ZXDASH_ROOT, "..", "map_config.json"), "utf8")); } catch (e) { mapConfig = {}; }
+      json(res, 200, { ok: true, data: {
+        tileUrl: "/api/v1/map/tiles/{dim}/{zoom}/{tx}/{ty}",
+        zoomIn: Number(mapConfig.zoomIn || 2),
+        zoomOut: Number(mapConfig.zoomOut || -7),
+        lastRender: Number(mapConfig.lastRender || 0),
+        dimensions: [
+          { id: 0, tile: "overworld", name: "主世界" },
+          { id: 1, tile: "nether", name: "下界" },
+          { id: 2, tile: "the_end", name: "末地" }
+        ],
+        clusterRadius: 4,
+        retentionDays: 90
+      } });
+      return;
+    }
+    if (pathname === "/map/players") {
+      json(res, 200, { ok: true, data: mapPlayers() });
+      return;
+    }
+    if (pathname === "/map/containers") {
+      const dim = Number(url.searchParams.get("dim") || 0);
+      const at = Number(url.searchParams.get("at") || 0) || 0;
+      const day = url.searchParams.get("day") || "";
+      let bbox = null;
+      const bboxRaw = url.searchParams.get("bbox") || "";
+      if (bboxRaw) {
+        const values = bboxRaw.split(",").map(Number);
+        if (values.length === 4 && values.every(Number.isFinite)) bbox = values;
+      }
+      let items = listContainers({ dim, at, day, bbox, includeRemoved: !!at || !!day });
+      const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get("limit") || 1000) || 1000));
+      const cx = Number(url.searchParams.get("cx"));
+      const cz = Number(url.searchParams.get("cz"));
+      if (Number.isFinite(cx) && Number.isFinite(cz)) {
+        items.sort((a, b) => {
+          const da = (a.x - cx) * (a.x - cx) + (a.z - cz) * (a.z - cz);
+          const db = (b.x - cx) * (b.x - cx) + (b.z - cz) * (b.z - cz);
+          return da - db;
+        });
+      }
+      items = items.slice(0, limit);
+      json(res, 200, { ok: true, data: { at, day, items, clusters: [] } });
+      return;
+    }
+    const mapTile = pathname.match(/^\/map\/tiles\/([^/]+)\/(\d+)\/(-?\d+)\/(-?\d+)$/);
+    if (mapTile) {
+      const folder = mapTile[1] === "nether" ? "nether" : (mapTile[1] === "the_end" ? "the_end" : "overworld");
+      const level = Math.max(0, Math.min(20, Number(mapTile[2])));
+      const tileFile = path.join(ZXDASH_ROOT, "tiles", folder, String(level), mapTile[3] + "_" + mapTile[4] + ".png");
+      if (!tileFile.startsWith(path.join(ZXDASH_ROOT, "tiles"))) { res.writeHead(400); res.end(); return; }
+      if (!fs.existsSync(tileFile)) { res.writeHead(404); res.end(); return; }
+      return sendFile(res, tileFile, "public, max-age=3600");
+    }
+    const historyMatch = pathname.match(/^\/containers\/([^/]+)\/history$/);
+    if (historyMatch) {
+      const record = store.containers[decodeURIComponent(historyMatch[1])];
+      if (!record) { json(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "container not found" } }); return; }
+      json(res, 200, { ok: true, data: { container: containerSummary(record, 0), observations: record.observations || [] } });
+      return;
+    }
+    const containerMatch = pathname.match(/^\/containers\/([^/]+)$/);
+    if (containerMatch) {
+      const record = store.containers[decodeURIComponent(containerMatch[1])];
+      if (!record) { json(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "container not found" } }); return; }
+      const at = Number(url.searchParams.get("at") || 0) || 0;
+      let obsId = record.currentObservationId || "";
+      if (at) {
+        const found = (record.observations || []).find((entry) => Number(entry.at || 0) <= at);
+        obsId = found ? found.id : "";
+      }
+      json(res, 200, { ok: true, data: Object.assign({ observation: store.containerObs[obsId] || null }, containerSummary(record, at)) });
+      return;
+    }
     if (pathname === "/flow" || pathname === "/flow/summary") {
       const filter = flowRange(url);
       if (pathname === "/flow/summary") {
@@ -1122,11 +1356,13 @@ async function handleApi(req, res, url) {
       return;
     }
     if (pathname === "/audit") {
+      if (!hasPermission("audit.read")) { deny("audit.read"); return; }
       const limit = Math.min(Number(url.searchParams.get("limit") || 100), 500);
       json(res, 200, { ok: true, data: store.audit.slice(0, limit) });
       return;
     }
     if (pathname === "/audit/verify") {
+      if (!hasPermission("audit.read")) { deny("audit.read"); return; }
       const entries = store.audit.slice().sort((a, b) => Number(a.seq) - Number(b.seq));
       let prevHash = "";
       let valid = true;
@@ -1172,7 +1408,35 @@ async function handleApi(req, res, url) {
   if (req.method === "POST") {
     let body;
     try { body = await readBody(req); } catch (e) { json(res, 400, { ok: false, error: { code: "VALIDATION", message: e.message } }); return; }
+    if (pathname === "/accounts") {
+      const owner = (store.users || [])[0];
+      if (!owner || !session || session.username !== owner.username || !hasPermission("accounts.manage")) {
+        json(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有初始管理员可以添加账号" } });
+        return;
+      }
+      const username = String(body.username || "").trim();
+      const password = String(body.password || "");
+      const role = ["viewer", "operator", "admin"].includes(String(body.role || "viewer")) ? String(body.role || "viewer") : "viewer";
+      if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
+        json(res, 400, { ok: false, error: { code: "VALIDATION", message: "用户名 3-32 位，仅字母数字 _ . -" } });
+        return;
+      }
+      if (password.length < 10) {
+        json(res, 400, { ok: false, error: { code: "VALIDATION", message: "密码至少 10 位" } });
+        return;
+      }
+      if ((store.users || []).some((u) => u.username === username)) {
+        json(res, 409, { ok: false, error: { code: "CONFLICT", message: "账号已存在" } });
+        return;
+      }
+      const salt = crypto.randomBytes(16).toString("hex");
+      const user = normalizeUser({ username: username, salt: salt, iterations: PBKDF2_ITERATIONS, hash: hashPassword(password, salt, PBKDF2_ITERATIONS), role: role });
+      store.users.push(user); save();
+      json(res, 200, { ok: true, data: publicUser(user) });
+      return;
+    }
     if (pathname === "/commands") {
+      if (!hasPermission("command.execute")) { deny("command.execute"); return; }
       if (!body.command) { json(res, 400, { ok: false, error: { code: "VALIDATION", message: "command required" } }); return; }
       const task = createTask("command.execute", { command: String(body.command), serverId: store.server.serverId }, "web");
       json(res, 200, { ok: true, data: { taskId: task.taskId, state: task.state } });
@@ -1181,10 +1445,12 @@ async function handleApi(req, res, url) {
     const m = pathname.match(/^\/actions\/([^/]+)$/);
     if (m) {
       const id = decodeURIComponent(m[1]);
-      if (!actionList().some((a) => a.id === id)) {
+      const action = actionList().find((a) => a.id === id);
+      if (!action) {
         json(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "unknown action" } });
         return;
       }
+      if (!hasPermission(action.permission)) { deny(action.permission); return; }
       const task = createTask(id, Object.assign({}, body, { serverId: store.server.serverId }), "web");
       json(res, 200, { ok: true, data: { taskId: task.taskId, state: task.state } });
       return;
@@ -1214,7 +1480,6 @@ function serveStatic(req, res, url) {
     if (!setupRequired()) {
       res.writeHead(302, { Location: "/login" }); res.end(); return;
     }
-    // 页面本身不包含秘密；创建账号必须提交 BDS 的 web.token。
     return sendFile(res, path.join(PUBLIC, "setup.html"), "no-cache");
   }
   if (pathname === "/login") {
@@ -1227,7 +1492,6 @@ function serveStatic(req, res, url) {
     return sendAppIndex(res, req, true);
   }
   if (pathname === "/" || pathname === "" || pathname === "/index.html") {
-    // 独立端始终先渲染 index；登录/首次设置以页内状态呈现，不依赖插件或 BDS。
     return sendAppIndex(res, req);
   }
 

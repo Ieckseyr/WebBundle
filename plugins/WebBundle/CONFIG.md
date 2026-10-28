@@ -40,6 +40,11 @@ plugins/WebBundle/data/config.json
     "maxEvents": 100000,
     "pageSize": 50
   },
+  "container": {
+    "retentionDays": 90,
+    "maxContainers": 50000,
+    "clusterRadius": 4
+  },
   "external": {
     "enabled": true,
     "url": "http://127.0.0.1:8080",
@@ -88,6 +93,14 @@ plugins/WebBundle/data/config.json
 | `retentionDays` | 物品去向保留天数，默认 `30` |
 | `maxEvents` | 物品去向最大事件数，默认 `100000` |
 | `pageSize` | 网页分页大小，默认 `50` |
+
+### container
+
+| 字段 | 说明 |
+| --- | --- |
+| `retentionDays` | 容器观测与已移除容器保留天数，默认 `90` |
+| `maxContainers` | 容器主记录上限，默认 `50000` |
+| `clusterRadius` | 地图邻近容器合并半径（方块），默认 `4` |
 
 ### external
 

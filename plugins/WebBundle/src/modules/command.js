@@ -4,7 +4,7 @@
 export const commandModule = {
     id: "command",
     name: "网页指令",
-    version: "1.0.0",
+    version: "1.1.0",
     setup(ctx) {
         function execute(payload) {
             const cmd = String((payload && payload.command) || "").trim();
@@ -20,7 +20,6 @@ export const commandModule = {
             if (wrappers.has(first) && (!payload || payload.confirm !== true)) {
                 throw new Error("危险指令需要二次确认: " + first);
             }
-            // execute 后面的 run 目标、function/schedule 的参数都可能间接执行危险指令。
             const runIndex = words.indexOf("run");
             const targets = runIndex >= 0 ? words.slice(runIndex + 1) : words;
             for (const word of targets) {

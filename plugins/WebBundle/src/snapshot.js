@@ -13,7 +13,6 @@ class Recorder {
     nextSeq(xuid) {
         let n = this.seq.get(xuid);
         if (n === undefined) {
-            // 重启后从已落盘快照恢复序号，旧格式 ID 末尾的序号也兼容。
             n = 0;
             try {
                 const index = this.app.store.listSnapshotIndex(xuid, this.app.store.indexLimit);
@@ -22,7 +21,7 @@ class Recorder {
                     const byId = Number(String(entry.id || "").split(":").pop());
                     n = Math.max(n, Number.isFinite(byMeta) ? byMeta : 0, Number.isFinite(byId) ? byId : 0);
                 }
-            } catch (e) { /* 首次玩家 */ }
+            } catch (e) {  }
         }
         n += 1;
         this.seq.set(xuid, n);
@@ -30,7 +29,6 @@ class Recorder {
     }
 
     snapshotId(xuid, seq, ts) {
-        // 时间戳后缀保证即使旧数据序号识别失败也不会覆盖已有快照。
         return this.app.config.serverId + ":" + xuid + ":" + seq + ":" + Number(ts || Date.now()).toString(36);
     }
 

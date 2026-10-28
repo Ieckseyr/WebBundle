@@ -3,7 +3,6 @@
 
 import { log } from "../core.js";
 
-// 模块宿主只加载内置模块。模块之间不互相发现，统一通过 ctx 暴露的能力工作。
 class ModuleHost {
     constructor(app) {
         this.app = app;

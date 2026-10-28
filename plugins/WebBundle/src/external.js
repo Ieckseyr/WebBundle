@@ -34,11 +34,10 @@ class External {
         this.push("register", {
             serverId: this.app.config.serverId,
             name: this.app.config.serverName || "",
-            version: "1.0.0",
+            version: "1.1.0",
             lastAckSeq: 0
         });
         this.pushExtensions();
-        // 首次接入时补发每个已知玩家的最后备份，避免冷查看为空。
         setTimeout(() => {
             try {
                 for (const meta of this.app.store.listPlayers()) {
@@ -83,8 +82,6 @@ class External {
     }
 
     shutdown() {
-        // 卸载阶段不再发起 network.httpPost：LSE 的异步回调可能在 QuickJS
-        // 运行时释放后才回来，导致 BDS 在关服时崩溃。独立端按 staleMs 判离线。
         this.stop();
     }
 
@@ -108,7 +105,6 @@ class External {
         const done = (ok) => {
             if (typeof opt.onDone === "function") opt.onDone(ok);
         };
-        // 独立端不可达时不要每个事件都打一条日志，也不要持续敲端口。
         if (Date.now() < this.retryAt) {
             if (requeue) this.queueSpool(kind, payload);
             return;
@@ -120,14 +116,12 @@ class External {
             this.consecutiveFailures += 1;
             this.spoolFailures += 1;
             this.lastError = why;
-            // 固定短退避：本地/内网独立端恢复后 5 秒内继续探活，同时避免每个事件刷一条日志。
             const delay = 5000;
             this.spoolBackoffUntil = Date.now() + delay;
             this.retryAt = this.spoolBackoffUntil;
             if (requeue) this.queueSpool(kind, payload);
             const now = Date.now();
             if (!this.offlineWarned || now - this.lastWarnAt > 300000) {
-                // log("warn", "推送失败 " + kind + " " + why + "；独立端不可达 " + this.base +"，已缓存待推送数据（检查 standalone 是否启动、端口/防火墙和 external.url）");
                 this.lastWarnAt = now;
                 this.offlineWarned = true;
             }
@@ -190,6 +184,15 @@ class External {
         this.push("flow", { serverId: this.app.config.serverId, items: [event] });
     }
 
+    pushContainer(record, observation) {
+        if (!this.enabled || !record || !observation) return;
+        this.push("container", {
+            serverId: this.app.config.serverId,
+            container: record,
+            observation: observation
+        });
+    }
+
     pushAudit(record) {
         if (!this.enabled || !record) return;
         this.push("audit", { serverId: this.app.config.serverId, items: [record] });
@@ -201,7 +204,6 @@ class External {
         if (now - this.lastPoll < this.pollSec * 1000) return;
         this.lastPoll = now;
         if (now < this.retryAt) return;
-        // 先探活，只有心跳成功才继续刷队列/拉动作，避免断线时并发打满。
         this.push("heartbeat", { ts: now, serverId: this.app.config.serverId }, {
             onDone: (ok) => {
                 if (!ok) return;

@@ -13,6 +13,43 @@ const MIME = {
     ".svg": "image/svg+xml"
 };
 
+function blockFacing(dim, x, y, z) {
+    try {
+        const block = mc.getBlock(Number(x), Number(y), Number(z), Number(dim));
+        if (!block) return "";
+        let state = {};
+        try {
+            const nbt = block.getNbt ? block.getNbt() : null;
+            const states = nbt && nbt.getTag ? nbt.getTag("states") : null;
+            state = states && states.toObject ? states.toObject() : (block.getBlockState() || {});
+        } catch (e) {
+            state = block.getBlockState ? (block.getBlockState() || {}) : {};
+        }
+        const raw = state["minecraft:facing_direction"] != null ? state["minecraft:facing_direction"] :
+            (state.facing_direction != null ? state.facing_direction :
+            (state["minecraft:cardinal_direction"] || state.cardinal_direction || state.direction));
+        const value = String(raw == null ? "" : raw).toLowerCase();
+        if (value === "north" || value === "south" || value === "east" || value === "west" || value === "up" || value === "down") return value;
+        const numeric = Number(value);
+        return ["down", "up", "north", "south", "west", "east"][numeric] || "";
+    } catch (e) {  }
+    return "";
+}
+
+function blockPair(dim, x, y, z) {
+    try {
+        const block = mc.getBlock(Number(x), Number(y), Number(z), Number(dim));
+        const be = block && block.getBlockEntity ? block.getBlockEntity() : null;
+        const nbt = be && be.getNbt ? be.getNbt() : null;
+        const obj = nbt && nbt.toObject ? nbt.toObject() : null;
+        if (!obj) return null;
+        const pairX = Number(obj.pairx);
+        const pairZ = Number(obj.pairz);
+        if (!Number.isFinite(pairX) || !Number.isFinite(pairZ)) return null;
+        return { x: pairX, z: pairZ, lead: !!Number(obj.pairlead), axis: pairX !== Number(x) ? "x" : (pairZ !== Number(z) ? "z" : "") };
+    } catch (e) { return null; }
+}
+
 class Web {
     constructor(app) {
         this.app = app;
@@ -21,11 +58,14 @@ class Web {
         this.sessions = new Map();
         this.loginFails = new Map();
         this.account = app.store.get("auth:account", null);
+        const storedAccounts = app.store.get("auth:accounts", null);
+        this.accounts = Array.isArray(storedAccounts) ? storedAccounts.slice() : (this.account ? [Object.assign({}, this.account, { owner: true })] : []);
+        if (this.accounts.length && !this.accounts.some((entry) => entry.owner)) this.accounts[0].owner = true;
         this._overviewCache = null;
     }
 
     loadAssets() {
-        const files = ["index.html", "app.js", "app.css", "style.css", "pbkdf2.js", "textures/items-map.json"];
+        const files = ["index.html", "app.js", "app.css", "style.css", "pbkdf2.js", "textures/items-map.json", "vendor/three.min.js", "vendor/OrbitControls.js"];
         for (const name of files) {
             const path = "plugins/WebBundle/web/" + name;
             try {
@@ -71,14 +111,10 @@ class Web {
 
     stop() {
         const server = this.server;
-        // 先断开 JS 对 HttpServer 包装对象的引用；否则包装对象会拖到
-        // QuickJS 运行时释放后才析构，LSE 的 HttpServerCallback 会在无运行时
-        // 的情况下释放 Global<Value>，直接崩服。
         this.server = null;
         try {
             if (server && server.isRunning()) server.stop();
         } catch (e) {
-            // 忽略
         }
     }
 
@@ -109,7 +145,6 @@ class Web {
                 if (part.slice(0, index).trim() === name) return decodeURIComponent(part.slice(index + 1).trim());
             }
         } catch (e) {
-            // 无 Cookie
         }
         return "";
     }
@@ -124,7 +159,30 @@ class Web {
             return null;
         }
         session.seen = Date.now();
-        return { sid: sid, name: session.name, role: session.role };
+        return { sid: sid, name: session.name, role: session.role, owner: !!session.owner };
+    }
+
+    accountByName(name) {
+        return this.accounts.find((entry) => String(entry.username || "") === String(name || "")) || null;
+    }
+
+    ownerAccount() {
+        return this.accounts.find((entry) => entry.owner) || this.accounts[0] || null;
+    }
+
+    isOwner(identity) {
+        if (!identity) return false;
+        const account = this.accountByName(identity.name);
+        return !!(account && account.owner);
+    }
+
+    publicAccount(account) {
+        return {
+            username: account.username,
+            role: account.role || "viewer",
+            owner: !!account.owner,
+            createdAt: Number(account.createdAt || 0)
+        };
     }
 
     identity(req) {
@@ -135,9 +193,8 @@ class Web {
             const role = String(this.app.config.web.role || "admin");
             return { name: "web-" + role, role: role };
         }
-        // 没配置 token 时不再默认 anonymous admin，只接受登录会话。
         const session = this.sessionFor(req);
-        if (session) return { name: session.name || "admin", role: session.role, cookie: true };
+        if (session) return { name: session.name || "admin", role: session.role, owner: !!session.owner, cookie: true };
         return null;
     }
 
@@ -147,9 +204,11 @@ class Web {
             if (session.expires <= now) this.sessions.delete(sid);
         }
         const sid = "wb_" + sha256Hex(now + ":" + Math.random() + ":" + Math.random() + ":" + this.sessions.size).slice(0, 40);
+        const account = this.accountByName(name);
         this.sessions.set(sid, {
             name: String(name || "web"),
             role: String(role || this.app.config.web.role || "admin"),
+            owner: !!(account && account.owner),
             created: now, seen: now, expires: now + 12 * 60 * 60 * 1000
         });
         return sid;
@@ -193,19 +252,32 @@ class Web {
 
     authStatus(req, res) {
         const session = this.sessionFor(req);
+        const owner = this.ownerAccount();
         this.sendJson(res, 200, { ok: true, data: {
-            setupRequired: !this.account,
+            setupRequired: !this.accounts.length,
             authenticated: !!session,
             username: session ? session.name : "",
             role: session ? session.role : "viewer",
-            salt: this.account ? this.account.salt : "",
-            iterations: this.account ? Number(this.account.iterations || 210000) : 210000,
+            owner: !!(session && session.owner),
+            accounts: this.accounts.length,
+            salt: owner ? owner.salt : "",
+            iterations: owner ? Number(owner.iterations || 210000) : 210000,
             algo: "pbkdf2-sha256-client"
         } });
     }
 
+    authSalt(req, res) {
+        const username = String(this.query(req, "username", "") || "").trim();
+        const account = this.accountByName(username);
+        if (!account) {
+            this.sendJson(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "账号不存在" } });
+            return;
+        }
+        this.sendJson(res, 200, { ok: true, data: { username: account.username, salt: account.salt, iterations: Number(account.iterations || 210000) } });
+    }
+
     authSetup(req, res) {
-        if (this.account) {
+        if (this.accounts.length) {
             this.sendJson(res, 409, { ok: false, error: { code: "CONFLICT", message: "管理员账号已存在" } });
             return;
         }
@@ -241,11 +313,14 @@ class Web {
             salt: salt,
             iterations: iterations,
             verifierHash: sha256Hex("webbundle-verifier-v1:" + verifier),
+            owner: true,
             createdAt: Date.now(),
             updatedAt: Date.now()
         };
         this.app.store.set("auth:account", record);
         this.account = record;
+        this.accounts = [record];
+        this.app.store.set("auth:accounts", this.accounts);
         const sid = this.newSession(username, record.role);
         res.setHeader("Set-Cookie", this.cookieHeader(req, sid));
         this.sendJson(res, 200, { ok: true, data: { username: username, role: record.role, cookie: true } });
@@ -262,15 +337,16 @@ class Web {
         }
         const username = String(body.username || "").trim();
         const verifier = String(body.verifier || "").toLowerCase();
-        const expected = this.account ? this.account.verifierHash : "";
+        const account = this.accountByName(username);
+        const expected = account ? account.verifierHash : "";
         const actual = verifier ? sha256Hex("webbundle-verifier-v1:" + verifier) : "";
-        if (!this.account || username !== this.account.username || !this.safeEqual(expected, actual)) {
+        if (!account || !this.safeEqual(expected, actual)) {
             this.loginFails.set(ip, { count: (fail && Date.now() - fail.ts < 5 * 60 * 1000 ? fail.count : 0) + 1, ts: Date.now() });
             this.sendJson(res, 401, { ok: false, error: { code: "UNAUTHORIZED", message: "用户名或密码错误" } });
             return;
         }
-        const name = this.account.username;
-        const role = this.account.role || String(this.app.config.web.role || "admin");
+        const name = account.username;
+        const role = account.role || String(this.app.config.web.role || "admin");
         this.loginFails.delete(ip);
         const sid = this.newSession(name, role);
         res.setHeader("Set-Cookie", this.cookieHeader(req, sid));
@@ -288,6 +364,7 @@ class Web {
         const rank = { viewer: 1, operator: 2, admin: 3 };
         const need = {
             "inventory.read": 1, "snapshot.read": 1, "flow.read": 1,
+            "map.read": 1, "container.read": 1,
             "inventory.write": 2, "inventory.restore": 2,
             "command.execute": 3, "audit.read": 3, "accounts.manage": 3
         };
@@ -341,6 +418,10 @@ class Web {
             this.authStatus(req, res);
             return;
         }
+        if (req.method === "GET" && apiPath === "/auth/salt") {
+            this.authSalt(req, res);
+            return;
+        }
         if (req.method === "POST" && apiPath === "/auth/setup") {
             this.authSetup(req, res);
             return;
@@ -377,13 +458,15 @@ class Web {
                 data: {
                     serverId: app.config.serverId,
                     serverName: app.config.serverName || "BDS",
-                    version: "1.0.0",
+                    version: "1.1.0",
                     mode: "embedded",
                     server: { online: true, lastSeen: Date.now() },
                     dataAsOf: Date.now(),
                     apiVersion: 1,
                     role: identity ? identity.role : "viewer",
                     user: identity ? identity.name : "",
+                    owner: this.isOwner(identity),
+                    accounts: this.accounts.length,
                     auth: identity && identity.cookie ? "cookie" : (identity ? "token" : ""),
                     capabilities: ["inventory.live", "snapshot", "nbt", "flow", "command", "actions", "audit", "extensions"],
                     external: app.external ? app.external.status(req) : { enabled: false, url: "", online: false },
@@ -484,7 +567,8 @@ class Web {
                 if (q && item.name.toLowerCase().indexOf(q) < 0 && item.xuid.indexOf(q) < 0) continue;
                 list.push(item);
             }
-            list.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || b.lastSeen - a.lastSeen);
+            list.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN") ||
+                String(a.xuid).localeCompare(String(b.xuid)));
             this.sendJson(res, 200, { ok: true, data: list });
             return;
         }
@@ -597,6 +681,157 @@ class Web {
             return;
         }
 
+        if (path === "/map/meta") {
+            if (!this.can(identity, "map.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 map.read" } }); return; }
+            let mapConfig = {};
+            try { mapConfig = readJson("plugins/ZXDash/map_config.json", {}); } catch (e) { mapConfig = {}; }
+            this.sendJson(res, 200, { ok: true, data: {
+                tileUrl: "/api/v1/map/tiles/{dim}/{zoom}/{tx}/{ty}",
+                zoomIn: Number(mapConfig.zoomIn || 2),
+                zoomOut: Number(mapConfig.zoomOut || -7),
+                lastRender: Number(mapConfig.lastRender || 0),
+                dimensions: [
+                    { id: 0, tile: "overworld", name: "主世界" },
+                    { id: 1, tile: "nether", name: "下界" },
+                    { id: 2, tile: "the_end", name: "末地" }
+                ],
+                clusterRadius: Number((app.config.container && app.config.container.clusterRadius) || 4),
+                retentionDays: app.store.containerRetentionDays
+            } });
+            return;
+        }
+
+        if (path === "/map/players") {
+            if (!this.can(identity, "map.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 map.read" } }); return; }
+            const list = [];
+            try {
+                for (const p of mc.getOnlinePlayers()) {
+                    const name = String(p.name || p.realName || "");
+                    if (app.store.isBlockedName(name)) continue;
+                    list.push({ xuid: String(p.xuid), name: name, dim: Number(p.pos && p.pos.dimid || 0), x: Number(p.pos && p.pos.x || 0), y: Number(p.pos && p.pos.y || 0), z: Number(p.pos && p.pos.z || 0) });
+                }
+            } catch (e) {  }
+            list.sort((a, b) => String(a.name).localeCompare(String(b.name), "zh-CN"));
+            this.sendJson(res, 200, { ok: true, data: list });
+            return;
+        }
+
+        if (path === "/map/containers") {
+            if (!this.can(identity, "container.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 container.read" } }); return; }
+            const dim = Number(this.query(req, "dim", 0));
+            const at = Number(this.query(req, "at", 0)) || 0;
+            const day = String(this.query(req, "day", "") || "");
+            const bboxRaw = String(this.query(req, "bbox", "") || "");
+            let bbox = null;
+            if (bboxRaw) {
+                const values = bboxRaw.split(",").map((v) => Number(v));
+                if (values.length === 4 && values.every((v) => Number.isFinite(v))) bbox = values;
+            }
+            let summaries = app.store.listContainerSummaries(dim, {
+                at: at,
+                day: day,
+                includeRemoved: !!at || !!day,
+                bbox: bbox
+            });
+            const limit = Math.max(1, Math.min(2000, Number(this.query(req, "limit", 1000)) || 1000));
+            const cx = Number(this.query(req, "cx", NaN));
+            const cz = Number(this.query(req, "cz", NaN));
+            if (Number.isFinite(cx) && Number.isFinite(cz)) {
+                summaries.sort((a, b) => {
+                    const da = (a.x - cx) * (a.x - cx) + (a.z - cz) * (a.z - cz);
+                    const db = (b.x - cx) * (b.x - cx) + (b.z - cz) * (b.z - cz);
+                    return da - db;
+                });
+            }
+            summaries = summaries.slice(0, limit);
+            const enriched = summaries.map((entry) => {
+                const obsId = entry.observationId || entry.currentObservationId;
+                const obs = obsId ? app.store.getContainerObservation(obsId) : null;
+                const preview = obs && Array.isArray(obs.items) ? obs.items.slice(0, 5).map((slot) => ({
+                    t: slot.item && slot.item.t || "",
+                    n: slot.item && (slot.item.meta && slot.item.meta.name || slot.item.n) || "",
+                    c: Number(slot.item && slot.item.c || 1)
+                })) : [];
+                const kind = String(entry.type || "").toLowerCase();
+                if (!entry.facing || (kind.indexOf("hopper") >= 0 || kind.indexOf("dispenser") >= 0 || kind.indexOf("dropper") >= 0 || kind.indexOf("barrel") >= 0)) {
+                    const actualFacing = blockFacing(entry.dim, entry.x, entry.y, entry.z);
+                    if (actualFacing) entry.facing = actualFacing;
+                }
+                if (Number(entry.size || 0) > 27 && entry.pairX == null) {
+                    const pair = blockPair(entry.dim, entry.x, entry.y, entry.z);
+                    if (pair) {
+                        entry.pairX = pair.x;
+                        entry.pairZ = pair.z;
+                        entry.pairLead = pair.lead;
+                        entry.doubleAxis = pair.axis;
+                    }
+                }
+                return Object.assign({}, entry, { preview: preview, previewMore: obs && obs.items ? Math.max(0, obs.items.length - preview.length) : 0 });
+            });
+            this.sendJson(res, 200, { ok: true, data: {
+                at: at, day: day, items: enriched, clusters: []
+            } });
+            return;
+        }
+
+        m = path.match(/^\/map\/tiles\/([^/]+)\/(\d+)\/(-?\d+)\/(-?\d+)$/);
+        if (m) {
+            if (!this.can(identity, "map.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 map.read" } }); return; }
+            const folder = m[1] === "nether" ? "nether" : (m[1] === "the_end" ? "the_end" : "overworld");
+            const zoom = Math.max(0, Math.min(20, Number(m[2])));
+            const file = "plugins/ZXDash/unmined-web/tiles/" + folder + "/" + zoom + "/" + m[3] + "_" + m[4] + ".png";
+            try {
+                if (!File.exists(file)) { res.status = 404; res.write(""); return; }
+                const data = File.readFrom(file, true);
+                res.status = 200;
+                res.setHeader("Content-Type", "image/png");
+                res.setHeader("Cache-Control", "public, max-age=3600");
+                res.write(data);
+            } catch (e) {
+                res.status = 404;
+                res.write("");
+            }
+            return;
+        }
+
+        m = path.match(/^\/containers\/([^/]+)\/history$/);
+        if (m) {
+            if (!this.can(identity, "container.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 container.read" } }); return; }
+            const data = app.store.listContainerHistory(decodeURIComponent(m[1]));
+            if (!data) { this.sendJson(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "容器不存在" } }); return; }
+            this.sendJson(res, 200, { ok: true, data: data });
+            return;
+        }
+
+        m = path.match(/^\/containers\/([^/]+)$/);
+        if (m) {
+            if (!this.can(identity, "container.read")) { this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 container.read" } }); return; }
+            const id = decodeURIComponent(m[1]);
+            const record = app.store.getContainer(id);
+            if (!record) { this.sendJson(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "容器不存在" } }); return; }
+            const at = Number(this.query(req, "at", 0)) || 0;
+            let obsId = record.currentObservationId || "";
+            if (at) {
+                const found = (record.observations || []).find((entry) => Number(entry.at || 0) <= at);
+                obsId = found ? found.id : "";
+            }
+            const observation = obsId ? app.store.getContainerObservation(obsId) : null;
+            this.sendJson(res, 200, { ok: true, data: {
+                id: record.id, dim: record.dim, x: record.x, y: record.y, z: record.z,
+                type: record.type, name: record.name || record.type,
+                facing: record.facing || (observation && observation.facing) || blockFacing(record.dim, record.x, record.y, record.z),
+                pairX: record.pairX != null ? record.pairX : (blockPair(record.dim, record.x, record.y, record.z) || {}).x,
+                pairZ: record.pairZ != null ? record.pairZ : (blockPair(record.dim, record.x, record.y, record.z) || {}).z,
+                pairLead: record.pairLead != null ? record.pairLead : (blockPair(record.dim, record.x, record.y, record.z) || {}).lead,
+                doubleAxis: record.doubleAxis || (blockPair(record.dim, record.x, record.y, record.z) || {}).axis,
+                size: Number(record.size || (observation && observation.size) || 0),
+                firstSeen: record.firstSeen, lastSeen: record.lastSeen,
+                removedAt: record.removedAt || 0, state: record.removedAt ? "removed" : "present",
+                observation: observation
+            } });
+            return;
+        }
+
         if (path === "/audit/verify") {
             if (!this.can(identity, "audit.read")) {
                 this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 audit.read" } });
@@ -654,6 +889,15 @@ class Web {
             return;
         }
 
+        if (path === "/accounts") {
+            if (!this.isOwner(identity)) {
+                this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有初始管理员可以管理账号" } });
+                return;
+            }
+            this.sendJson(res, 200, { ok: true, data: this.accounts.map((account) => this.publicAccount(account)) });
+            return;
+        }
+
         if (path === "/actions") {
             this.sendJson(res, 200, { ok: true, data: this.actionList() });
             return;
@@ -671,6 +915,39 @@ class Web {
             return;
         }
         const app = this.app;
+        if (path === "/accounts") {
+            if (!this.isOwner(identity)) {
+                this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "只有初始管理员可以添加账号" } });
+                return;
+            }
+            const username = String(body.username || "").trim();
+            const salt = String(body.salt || "").toLowerCase();
+            const verifier = String(body.verifier || "").toLowerCase();
+            const iterations = Number(body.iterations || 210000);
+            const role = ["viewer", "operator", "admin"].indexOf(String(body.role || "viewer")) >= 0 ? String(body.role || "viewer") : "viewer";
+            if (!validUsername(username)) {
+                this.sendJson(res, 400, { ok: false, error: { code: "VALIDATION", message: "用户名 3-32 位，仅字母数字 _ . -" } });
+                return;
+            }
+            if (this.accountByName(username)) {
+                this.sendJson(res, 409, { ok: false, error: { code: "CONFLICT", message: "账号已存在" } });
+                return;
+            }
+            if (!/^[0-9a-f]{32}$/.test(salt) || !/^[0-9a-f]{64}$/.test(verifier) || !Number.isFinite(iterations) || iterations < 100000 || iterations > 500000) {
+                this.sendJson(res, 400, { ok: false, error: { code: "VALIDATION", message: "密码校验参数无效" } });
+                return;
+            }
+            const record = {
+                schema: 2, username: username, role: role,
+                algo: "pbkdf2-sha256-client", salt: salt, iterations: iterations,
+                verifierHash: sha256Hex("webbundle-verifier-v1:" + verifier),
+                owner: false, createdAt: Date.now(), updatedAt: Date.now()
+            };
+            this.accounts.push(record);
+            app.store.set("auth:accounts", this.accounts);
+            this.sendJson(res, 200, { ok: true, data: this.publicAccount(record) });
+            return;
+        }
         if (path === "/commands") {
             if (!this.can(identity, "command.execute")) {
                 this.sendJson(res, 403, { ok: false, error: { code: "FORBIDDEN", message: "缺少 command.execute" } });
@@ -717,13 +994,14 @@ class Web {
         try { flow = app.logistics ? app.logistics.list({}, 500) : []; } catch (e) { flow = []; }
         const todayFlow = flow.filter((event) => Number(event.ts || 0) >= start);
         let players = [];
+        let totalPlayers = 0;
         try {
             const online = mc.getOnlinePlayers();
-            const map = new Map();
+            const onlinePlayers = [];
             for (const p of online) {
                 const playerName = String(p.name || p.realName || "");
                 if (app.store.isBlockedName(playerName)) continue;
-                map.set(String(p.xuid), {
+                onlinePlayers.push({
                     xuid: String(p.xuid),
                     name: playerName,
                     online: true,
@@ -731,24 +1009,22 @@ class Web {
                     dim: p.pos ? p.pos.dimid : 0
                 });
             }
+            onlinePlayers.sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN"));
+            players = onlinePlayers;
+            const onlineXuids = new Set(onlinePlayers.map((p) => String(p.xuid)));
+            totalPlayers = onlinePlayers.length;
             for (const meta of app.store.listPlayers()) {
-                if (!map.has(meta.xuid)) map.set(meta.xuid, {
-                    xuid: meta.xuid,
-                    name: meta.name || "",
-                    online: false,
-                    lastSeen: meta.lastSeen || 0,
-                    dim: meta.dim || 0
-                });
+                if (!onlineXuids.has(String(meta.xuid))) totalPlayers += 1;
             }
-            players = Array.from(map.values());
         } catch (e) {
-            players = app.store.listPlayers();
+            players = [];
+            totalPlayers = app.store.listPlayers().length;
         }
         let audit = [];
         let verify = { valid: false, count: 0, firstSeq: null, lastSeq: null };
         if (this.can(identity, "audit.read")) {
             try { audit = app.store.listAudit(5); } catch (e) { audit = []; }
-            try { verify = app.store.verifyAudit(); } catch (e) { /* 保持空结果 */ }
+            try { verify = app.store.verifyAudit(); } catch (e) {  }
         }
         let tasks = [];
         try { tasks = app.actions.list(200); } catch (e) { tasks = []; }
@@ -760,11 +1036,11 @@ class Web {
                 id: app.config.serverId,
                 name: app.config.serverName || "BDS",
                 online: true,
-                version: "1.0.0"
+                version: "1.1.0"
             },
             counts: {
-                playersOnline: players.filter((p) => p.online).length,
-                playersTotal: players.length,
+                playersOnline: players.length,
+                playersTotal: totalPlayers,
                 snapshotsToday: app.store.countSnapshotsSince(start),
                 flowToday: todayFlow.length,
                 flowIn: todayFlow.filter((e) => e.direction === "in").length,
@@ -827,7 +1103,7 @@ class Web {
             res.write("bad path");
             return;
         }
-        if (path.indexOf("/textures/items/") === 0 && /\.(png|webp)$/i.test(path)) {
+        if ((path.indexOf("/textures/items/") === 0 || path.indexOf("/textures/custom/") === 0) && /\.(png|webp)$/i.test(path)) {
             const full = "plugins/WebBundle/web" + path;
             try {
                 if (File.exists(full)) {
@@ -853,7 +1129,6 @@ class Web {
             res.write(asset.body);
             return;
         }
-        // SPA 兜底
         const index = this.assets.get("/index.html");
         if (index) {
             res.status = 200;

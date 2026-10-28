@@ -106,6 +106,12 @@ Authorization: Bearer <web.token>
 | GET | `/nbt/:hash` | 完整 SNBT 大对象 |
 | GET | `/flow` | 物品去向，分页与时间范围 |
 | GET | `/flow/summary` | 区间合并总结 |
+| GET | `/map/meta` | 地图瓦片/维度/聚合配置 |
+| GET | `/map/tiles/:dim/:zoom/:tx/:ty` | ZXDash Unmined 瓦片 |
+| GET | `/map/players` | 地图在线玩家位置 |
+| GET | `/map/containers` | 容器摘要/聚合点 |
+| GET | `/containers/:id` | 容器内容 |
+| GET | `/containers/:id/history` | 容器当天观测 |
 | GET | `/audit` | 操作记录 |
 | GET | `/audit/verify` | 强制全量哈希链校验 |
 | GET | `/tasks` | 任务列表 |
@@ -220,7 +226,74 @@ items[]: t / direction / count / events / firstTs / lastTs
 
 ---
 
-## 3. 动作接口
+## 3. 容器地图接口
+
+### 3.1 地图元信息
+
+```http
+GET /api/v1/map/meta
+```
+
+返回 ZXDash 瓦片配置、维度、聚合半径和容器保留天数。
+
+### 3.2 容器摘要/聚合点
+
+```http
+GET /api/v1/map/containers?dim=0&day=2026-10-26&at=1790000000000&bbox=0,0,512,512&cx=0&cz=0&limit=1000
+```
+
+- `at`/`day` 不传为实时容器
+- 历史模式返回当天出现过的容器，包括已移除
+- `cx`/`cz` 为地图视野中心，服务端优先返回最近容器
+- `limit` 是原始容器上限，前端再按缩放聚合并限制为最多 100 个标点
+- 返回 `items[]` 摘要；摘要只含 `preview` 前 5 件物品，不返回完整 NBT
+
+### 3.3 容器内容
+
+```http
+GET /api/v1/containers/:id
+GET /api/v1/containers/:id?at=1790000000000
+```
+
+`id` 形如：
+
+```text
+container:0:120:64:-380
+```
+
+需要 URL 编码。
+
+### 3.4 容器当天历史
+
+```http
+GET /api/v1/containers/:id/history
+```
+
+返回容器观测列表，包括打开/关闭时间、玩家、物品数。
+
+### 3.5 玩家位置
+
+```http
+GET /api/v1/map/players
+```
+
+返回当前在线玩家的 `dim/x/y/z`。
+
+### 3.6 瓦片
+
+```http
+GET /api/v1/map/tiles/overworld/5/0/0
+```
+
+读取：
+
+```text
+plugins/ZXDash/unmined-web/tiles/<dim>/<zoom>/<tx>_<ty>.png
+```
+
+---
+
+## 4. 动作接口
 
 ```http
 POST /api/v1/actions/:actionId
@@ -322,7 +395,7 @@ tag.minecraft:item_lock = 1b | 2b
 
 ---
 
-## 4. 快照查看
+## 5. 快照查看
 
 快照查看是只读的。
 
@@ -338,7 +411,7 @@ tag.minecraft:item_lock = 1b | 2b
 
 ---
 
-## 5. 插件导出 API
+## 6. 插件导出 API
 
 只导出扩展页面/模块能力，不导出物品写入：
 
@@ -399,7 +472,7 @@ export const myModule = {
 
 ---
 
-## 6. 账号角色
+## 7. 账号角色
 
 ```text
 viewer    只读
@@ -411,7 +484,7 @@ admin     账号/权限管理
 
 ---
 
-## 7. 错误结构
+## 8. 错误结构
 
 ```json
 {

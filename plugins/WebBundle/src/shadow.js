@@ -148,7 +148,6 @@ class Shadow {
     onJoin(player) {
         const xuid = String(player.xuid);
         try {
-            // onJoin 事件到达时立即读取一次，避免合成/查包依赖 1.5 秒延迟。
             const state = this.seedPlayer(player);
             if (!state) return;
             this.app.recorder.capturePlayer(player, "join");

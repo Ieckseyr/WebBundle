@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WebBundle contributors
 
-// LSE QuickJS 的入口模块以服务器根目录解析相对导入。
-// 入口只做组装，具体逻辑在 src/app.js。
 import { createApp } from "./plugins/WebBundle/src/app.js";
 
 export const INFO = {
@@ -49,7 +47,6 @@ export function registerModule(module) {
 }
 
 
-// LSE 生命周期：先停网页/推送并落盘，避免 QuickJS 回调在运行时释放后销毁。
 export function onServerStop() {
     try { app.dispose(); } catch (e) { }
 }

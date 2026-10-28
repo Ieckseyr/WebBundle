@@ -41,7 +41,7 @@ class PagedIndex {
         const old = this.store.get(this.base, null);
         if (!Array.isArray(old)) return;
         if (!old.length) {
-            try { this.store.db.delete(this.base); } catch (e) { /* 忽略 */ }
+            try { this.store.db.delete(this.base); } catch (e) {  }
             return;
         }
         const tokens = [];
@@ -51,7 +51,7 @@ class PagedIndex {
             tokens.push(token);
         }
         this.store.set(this.base + ":pages", tokens);
-        try { this.store.db.delete(this.base); } catch (e) { /* 忽略 */ }
+        try { this.store.db.delete(this.base); } catch (e) {  }
     }
 
     pages() {
@@ -103,7 +103,7 @@ class PagedIndex {
         while (tokens.length > maxPages) {
             const droppedToken = tokens.pop();
             const dropped = this.store.get(this.pageKey(droppedToken), []);
-            try { this.store.db.delete(this.pageKey(droppedToken)); } catch (e) { /* 忽略 */ }
+            try { this.store.db.delete(this.pageKey(droppedToken)); } catch (e) {  }
             if (typeof onDrop === "function" && Array.isArray(dropped)) {
                 for (const entry of dropped) onDrop(entry);
             }
@@ -113,10 +113,10 @@ class PagedIndex {
 
     clear() {
         for (const token of this.pages()) {
-            try { this.store.db.delete(this.pageKey(token)); } catch (e) { /* 忽略 */ }
+            try { this.store.db.delete(this.pageKey(token)); } catch (e) {  }
         }
-        try { this.store.db.delete(this.base + ":pages"); } catch (e) { /* 忽略 */ }
-        try { this.store.db.delete(this.base); } catch (e) { /* 忽略 */ }
+        try { this.store.db.delete(this.base + ":pages"); } catch (e) {  }
+        try { this.store.db.delete(this.base); } catch (e) {  }
     }
 }
 
@@ -139,6 +139,10 @@ class Store {
         this.flowPageSize = Math.max(20, Math.min(200, Number(flowCfg.pageSize || 50)));
         this.flowIndex = new PagedIndex(this, "flow:index", 200, this.flowMaxEvents);
         this.lastFlowPrune = Date.now();
+        const containerCfg = config.container || {};
+        this.containerRetentionDays = Math.max(1, Math.min(3650, Number(containerCfg.retentionDays || 90)));
+        this.containerMax = Math.max(1000, Math.min(200000, Number(containerCfg.maxContainers || 50000)));
+        this.containerIndexes = new Map();
         this.playerIndex = new PagedIndex(this, "player:index", 200, 10000);
         this.snapshotIndexes = new Map();
         this._playerSet = null;
@@ -219,10 +223,10 @@ class Store {
                         }
                         if (snap.nbtRefs) for (const ref of Object.keys(snap.nbtRefs)) removedRefs.add(ref);
                     }
-                    try { this.db.delete("snap:" + entry.id); } catch (e) { /* 忽略 */ }
+                    try { this.db.delete("snap:" + entry.id); } catch (e) {  }
                 }
                 this.snapshotIndex(xuid).clear();
-                try { this.db.delete("player:" + xuid); } catch (e) { /* 忽略 */ }
+                try { this.db.delete("player:" + xuid); } catch (e) {  }
             } else {
                 keep.push(xuid);
             }
@@ -237,14 +241,13 @@ class Store {
             const name = String(event && event.name || "").toLowerCase();
             const xuid = String(event && event.xuid || "");
             if (event && (this.blockedNames.has(name) || blockedXuids.has(xuid))) {
-                try { this.db.delete("flow:" + id); } catch (e) { /* 忽略 */ }
+                try { this.db.delete("flow:" + id); } catch (e) {  }
             } else {
                 keepFlow.push(id);
             }
         }
         this.flowIndex.clear();
         for (const id of keepFlow) this.flowIndex.unshift(id);
-        // 只删除没有任何保留快照引用的 NBT，避免共享大对象被误删。
         for (const ref of removedRefs) {
             let used = false;
             for (const xuid of keep) {
@@ -263,7 +266,7 @@ class Store {
                 if (used) break;
             }
             if (!used) {
-                try { this.db.delete("nbt:" + ref); } catch (e) { /* 忽略 */ }
+                try { this.db.delete("nbt:" + ref); } catch (e) {  }
             }
         }
         this._statsCache = null;
@@ -313,7 +316,7 @@ class Store {
             containerCounts: snapshot.containerCounts || null
         };
         this.snapshotIndex(xuid).unshift(meta, (entry) => {
-            try { this.db.delete("snap:" + entry.id); } catch (e) { /* 忽略 */ }
+            try { this.db.delete("snap:" + entry.id); } catch (e) {  }
         });
         this._statsCache = null;
         this.savePlayer({
@@ -401,7 +404,6 @@ class Store {
             const index = this.snapshotIndex(player.xuid).read(this.indexLimit);
             for (const meta of index) {
                 const diff = Math.floor((Number(meta.ts || 0) - start) / dayMs);
-                // 今天 diff=0，昨天 diff=-1；只统计最近 count 天。
                 if (diff <= 0 && diff > -count) buckets[count - 1 + diff] += 1;
             }
         }
@@ -452,7 +454,6 @@ class Store {
                 try {
                     this.db.delete("audit:" + old);
                 } catch (e) {
-                    // 忽略
                 }
             }
             const oldest = this.get("audit:" + index[index.length - 1], null);
@@ -520,7 +521,7 @@ class Store {
     appendFlow(event) {
         this.set("flow:" + event.id, event);
         this.flowIndex.unshift(event.id, (id) => {
-            try { this.db.delete("flow:" + id); } catch (e) { /* 忽略 */ }
+            try { this.db.delete("flow:" + id); } catch (e) {  }
         });
         this.maybePruneFlow();
     }
@@ -697,13 +698,229 @@ class Store {
         }
         if (drop.length) {
             for (const id of drop) {
-                try { this.db.delete("flow:" + id); } catch (e) { /* 忽略 */ }
+                try { this.db.delete("flow:" + id); } catch (e) {  }
             }
             this.flowIndex.replace(keep);
             log("info", "物品去向清理 " + drop.length + " 条，保留 " + keep.length + " 条（" + this.flowRetentionDays + " 天）");
         }
         this.lastFlowPrune = Date.now();
         return drop.length;
+    }
+
+    containerDayKey(ts) {
+        const d = new Date(Number(ts || Date.now()));
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return y + "-" + m + "-" + day;
+    }
+
+    containerIndex(dim) {
+        const key = "container:index:" + String(dim || 0);
+        if (!this.containerIndexes.has(key)) {
+            this.containerIndexes.set(key, new PagedIndex(this, key, 200, this.containerMax));
+        }
+        return this.containerIndexes.get(key);
+    }
+
+    containerId(dim, x, y, z) {
+        return "container:" + String(dim || 0) + ":" + Math.floor(Number(x || 0)) + ":" +
+            Math.floor(Number(y || 0)) + ":" + Math.floor(Number(z || 0));
+    }
+
+    getContainer(id) {
+        return this.get("container:current:" + id, null);
+    }
+
+    getContainerObservation(id) {
+        return this.get("container:obs:" + id, null);
+    }
+
+    putContainer(record) {
+        if (!record || !record.id) return false;
+        this.set("container:current:" + record.id, record);
+        const index = this.containerIndex(record.dim);
+        if (!record._indexed) index.unshift(record.id);
+        return true;
+    }
+
+    putContainerObservation(record, observation) {
+        if (!record || !observation) return null;
+        this.set("container:obs:" + observation.id, observation);
+        const day = this.containerDayKey(observation.at);
+        const dayKey = "container:day:" + day;
+        const dayList = this.get(dayKey, []);
+        if (!Array.isArray(dayList)) {
+            this.set(dayKey, [record.id]);
+        } else if (dayList.indexOf(record.id) < 0) {
+            dayList.unshift(record.id);
+            this.set(dayKey, dayList.slice(0, 100000));
+        }
+        record.currentObservationId = observation.id;
+        record.currentItemCount = Number(observation.itemCount || 0);
+        record.size = Number(observation.size || record.size || 0);
+        record.facing = observation.facing || record.facing || "south";
+        if (observation.pairX != null && observation.pairZ != null) {
+            record.pairX = Number(observation.pairX);
+            record.pairZ = Number(observation.pairZ);
+            record.pairLead = !!observation.pairLead;
+        }
+        record.currentContainerCounts = observation.containerCounts || null;
+        record.lastSeen = observation.at;
+        record.lastPlayer = observation.player || record.lastPlayer || null;
+        record.state = "present";
+        record.removedAt = 0;
+        record.dayKeys = Array.isArray(record.dayKeys) ? record.dayKeys : [];
+        if (record.dayKeys.indexOf(day) < 0) record.dayKeys.unshift(day);
+        record.dayKeys = record.dayKeys.slice(0, 400);
+        record.observations = Array.isArray(record.observations) ? record.observations : [];
+        record.observations.unshift({
+            id: observation.id,
+            at: observation.at,
+            reason: observation.reason,
+            itemCount: Number(observation.itemCount || 0),
+            contentHash: observation.contentHash || "",
+            player: observation.player || null
+        });
+        record.observations = record.observations.slice(0, 200);
+        this.set("container:current:" + record.id, record);
+        const index = this.containerIndex(record.dim);
+        if (!this.get("container:indexed:" + record.id, false)) {
+            index.unshift(record.id);
+            this.set("container:indexed:" + record.id, true);
+        }
+        return record;
+    }
+
+    markContainerRemoved(dim, x, y, z, type) {
+        const id = this.containerId(dim, x, y, z);
+        const record = this.getContainer(id);
+        if (!record) return null;
+        if (type && record.type && record.type !== type && !String(record.type).includes("shulker")) return null;
+        record.state = "removed";
+        record.removedAt = Date.now();
+        this.set("container:current:" + id, record);
+        return record;
+    }
+
+    listContainerSummaries(dim, options) {
+        const opt = options || {};
+        const index = this.containerIndex(dim);
+        const ids = index.read(index.maxItems);
+        const daySet = opt.day ? new Set(this.get("container:day:" + opt.day, [])) : null;
+        const sizeOf = (entry) => Number(entry && (entry.size || (entry.currentObservationId && (this.getContainerObservation(entry.currentObservationId) || {}).size)) || 0);
+        const largeAt = (entry, dx, dz) => {
+            if (!entry || sizeOf(entry) <= 27) return null;
+            const other = this.getContainer(this.containerId(entry.dim, Number(entry.x) + dx, entry.y, Number(entry.z) + dz));
+            return other && sizeOf(other) > 27 ? other : null;
+        };
+        const out = [];
+        for (const id of ids) {
+            if (daySet && !daySet.has(id)) continue;
+            const record = this.getContainer(id);
+            if (!record) continue;
+            if (sizeOf(record) > 27) {
+                if (largeAt(record, -1, 0)) continue;
+                if (!record.doubleAxis) record.doubleAxis = largeAt(record, 1, 0) ? "x" : "";
+            }
+            if (!opt.includeRemoved && Number(record.removedAt || 0) > 0) continue;
+            if (opt.from && Number(record.lastSeen || 0) < Number(opt.from)) continue;
+            if (opt.to && Number(record.firstSeen || 0) > Number(opt.to)) continue;
+            if (opt.bbox) {
+                const b = opt.bbox;
+                if (record.x < b[0] || record.x > b[2] || record.z < b[1] || record.z > b[3]) continue;
+            }
+            const summary = {
+                id: record.id,
+                dim: record.dim,
+                x: record.x,
+                y: record.y,
+                z: record.z,
+                type: record.type,
+                name: record.name || record.type,
+                firstSeen: record.firstSeen,
+                lastSeen: record.lastSeen,
+                removedAt: record.removedAt || 0,
+                state: record.removedAt && (!opt.at || Number(opt.at) >= Number(record.removedAt)) ? "removed" : "present",
+                currentObservationId: record.currentObservationId || "",
+                itemCount: Number(record.currentItemCount || 0),
+                size: sizeOf(record),
+                doubleAxis: record.doubleAxis || "",
+                pairX: record.pairX,
+                pairZ: record.pairZ,
+                pairLead: record.pairLead,
+                facing: record.facing || "",
+                containerCounts: record.currentContainerCounts || null,
+                observationCount: (record.observations || []).length
+            };
+            if (opt.at) {
+                const at = Number(opt.at);
+                const obs = (record.observations || []).find((entry) => Number(entry.at || 0) <= at);
+                if (obs) {
+                    summary.observationId = obs.id;
+                    summary.observationAt = obs.at;
+                    summary.itemCount = Number(obs.itemCount || 0);
+                    summary.state = at >= Number(record.removedAt || 0) && record.removedAt ? "removed" : summary.state;
+                } else {
+                    summary.state = "unknown";
+                }
+            }
+            out.push(summary);
+        }
+        return out;
+    }
+
+    listContainerHistory(id) {
+        const record = this.getContainer(id);
+        if (!record) return null;
+        return {
+            container: {
+                id: record.id,
+                dim: record.dim,
+                x: record.x,
+                y: record.y,
+                z: record.z,
+                type: record.type,
+                name: record.name || record.type,
+                firstSeen: record.firstSeen,
+                lastSeen: record.lastSeen,
+                removedAt: record.removedAt || 0,
+                state: record.removedAt ? "removed" : "present"
+            },
+            observations: (record.observations || []).slice()
+        };
+    }
+
+    pruneContainers() {
+        const cutoff = Date.now() - this.containerRetentionDays * 24 * 3600 * 1000;
+        let totalRemoved = 0;
+        for (const dim of [0, 1, 2]) this.containerIndex(dim);
+        for (const dim of Array.from(this.containerIndexes.keys())) {
+            const index = this.containerIndexes.get(dim);
+            const ids = index.read(index.maxItems);
+            const keep = [];
+            let removed = 0;
+            for (const id of ids) {
+                const record = this.getContainer(id);
+                const last = Number(record && record.lastSeen || 0);
+                if (!record || (record.removedAt && last && last < cutoff)) {
+                    if (record) {
+                        for (const obs of record.observations || []) {
+                            try { this.db.delete("container:obs:" + obs.id); } catch (e) {  }
+                        }
+                    }
+                    try { this.db.delete("container:current:" + id); } catch (e) {  }
+                    try { this.db.delete("container:indexed:" + id); } catch (e) {  }
+                    removed += 1;
+                    totalRemoved += 1;
+                } else {
+                    keep.push(id);
+                }
+            }
+            if (removed) index.replace(keep);
+        }
+        if (totalRemoved) log("info", "容器历史清理 " + totalRemoved + " 个（" + this.containerRetentionDays + " 天）");
+        return totalRemoved;
     }
 
     listFlow(filter, limit) {

@@ -204,10 +204,9 @@ class Actions {
         if (container === "offhand") {
             if (typeof player.setOffHand !== "function") throw new Error("当前 LSE 版本不支持写副手槽");
             if (!data) {
-                // 副手清空必须走 setOffHand(null)，只改 getOffHand() 对象不会删除槽位。
                 player.setOffHand(null);
                 this.app.shadow.setSlot(xuid, "offhand", 0, null, true);
-                try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败 */ }
+                try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
                 return { ok: true, target: "online" };
             }
             const item = deserializeItem(Object.assign({}, data, { __nbtLoader: (h) => this.app.store.getNbt(h) }));
@@ -221,7 +220,7 @@ class Actions {
             }
             player.setOffHand(item);
             this.app.shadow.setSlot(xuid, "offhand", 0, item, true);
-            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败 */ }
+            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
             return { ok: true, target: "online" };
         }
         const ct = containerOf(player, container);
@@ -239,7 +238,7 @@ class Actions {
             ct.setItem(slot, item);
         } else ct.removeItem(slot, 999999);
         this.app.shadow.setSlot(xuid, container, slot, item, true);
-        try { if (player && typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败不影响数据 */ }
+        try { if (player && typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
         return { ok: true, target: "online" };
     }
 
@@ -260,7 +259,7 @@ class Actions {
                     const nbt = itemData.nbt ? NBT.parseSNBT(itemData.nbt) : NBT.parseSNBT("{}");
                     nbt.setShort("Damage", Math.max(0, Number(itemData.durMax) - Number(itemData.durability)));
                     itemData.nbt = nbt.toSNBT();
-                } catch (e) { /* 保留原样 */ }
+                } catch (e) {  }
             }
             filtered.push({ slot: Number(slot), item: itemData });
         }
@@ -288,7 +287,7 @@ class Actions {
             if (!item.setNbt(nbt)) throw new Error("setNbt 失败");
             if (ct) ct.setItem(slot, item);
             this.app.shadow.setSlot(xuid, container, container === "offhand" ? 0 : slot, item, true);
-            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败不影响数据 */ }
+            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
             return { ok: true, target: "online" };
         }
         let uuid = null;
@@ -377,7 +376,6 @@ class Actions {
                 const list = (value) => (Array.isArray(value) ? value : []).map((v) => String(v || "").trim()).filter((v) => /^[a-z0-9_:.\-]{1,128}$/i.test(v)).map((v) => v.indexOf(":") >= 0 ? v : "minecraft:" + v).slice(0, 64);
                 const place = list(payload.tags.canPlaceOn);
                 const destroy = list(payload.tags.canDestroy);
-                // 基岩版实际存储：方块白名单在物品根节点，锁定/死亡在 tag 内且为 byte。
                 delete target.CanPlaceOn;
                 delete target.CanDestroy;
                 if (place.length) target.CanPlaceOn = place;
@@ -429,7 +427,7 @@ class Actions {
             if (!parsed || !item.setNbt(parsed)) throw new Error("父物品 NBT 写入失败");
             if (ct) ct.setItem(slot, item);
             this.app.shadow.setSlot(xuid, container, container === "offhand" ? 0 : slot, item, true);
-            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败 */ }
+            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
             return { ok: true, target: "online", path: path };
         }
 
@@ -481,7 +479,6 @@ class Actions {
                     target = wrapper;
                     itemRoot = nbt;
                 } else if (nbt.getTag("Name")) {
-                    // 没有 tag 时创建标准物品 tag，组件必须写在 tag 内。
                     target = new NbtCompound();
                     nbt.setTag("tag", target);
                     itemRoot = nbt;
@@ -501,32 +498,31 @@ class Actions {
                     for (const line of lore) list.addTag(new NbtString(line));
                     display.setTag("Lore", list);
                 } else {
-                    try { display.removeTag("Lore"); } catch (e) { /* 不存在 */ }
+                    try { display.removeTag("Lore"); } catch (e) {  }
                 }
             }
             const writeBlockList = (key, values) => {
                 if (itemRoot) {
-                    try { itemRoot.removeTag(key); } catch (e) { /* 不存在 */ }
+                    try { itemRoot.removeTag(key); } catch (e) {  }
                     if (values.length) {
                         const list = new NbtList();
                         for (const value of values) list.addTag(new NbtString(value));
                         itemRoot.setTag(key, list);
                     }
                 }
-                // 清理旧版错误的 tag 内组件写法。
-                try { target.removeTag(key); } catch (e) { /* 不存在 */ }
+                try { target.removeTag(key); } catch (e) {  }
             };
             writeBlockList("CanPlaceOn", canPlaceOn);
             writeBlockList("CanDestroy", canDestroy);
-            try { target.removeTag("minecraft:can_place_on"); } catch (e) { /* 不存在 */ }
-            try { target.removeTag("minecraft:can_destroy"); } catch (e) { /* 不存在 */ }
-            try { target.removeTag("KeepOnDeath"); } catch (e) { /* 不存在 */ }
+            try { target.removeTag("minecraft:can_place_on"); } catch (e) {  }
+            try { target.removeTag("minecraft:can_destroy"); } catch (e) {  }
+            try { target.removeTag("KeepOnDeath"); } catch (e) {  }
             if (keepOnDeath) target.setByte("minecraft:keep_on_death", 1);
             else {
-                try { target.removeTag("minecraft:keep_on_death"); } catch (e) { /* 不存在 */ }
+                try { target.removeTag("minecraft:keep_on_death"); } catch (e) {  }
             }
-            try { target.removeTag("ItemLock"); } catch (e) { /* 旧格式 */ }
-            try { target.removeTag("minecraft:item_lock"); } catch (e) { /* 清掉旧 compound（如果存在） */ }
+            try { target.removeTag("ItemLock"); } catch (e) {  }
+            try { target.removeTag("minecraft:item_lock"); } catch (e) {  }
             if (itemLock) target.setByte("minecraft:item_lock", itemLock === "lock_in_slot" ? 1 : 2);
             if (target !== nbt) nbt.setTag("tag", target);
             return nbt;
@@ -539,13 +535,11 @@ class Actions {
             if (!item) throw new Error("槽位没有物品");
             let nbt = item.getNbt ? item.getNbt() : null;
             if (!nbt) nbt = NBT.parseSNBT("{}");
-            // 不调用 setLore：部分 LSE 版本会重建 NBT，把刚写入的组件一起清掉。
-            // 直接写 display.Lore、CanPlaceOn/CanDestroy、item_lock 和 keep_on_death。
             apply(nbt, true);
             if (!item.setNbt(nbt)) throw new Error("Lore/组件 NBT 写入失败");
             if (ct) ct.setItem(slot, item);
             this.app.shadow.setSlot(xuid, container, container === "offhand" ? 0 : slot, item, true);
-            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败不影响数据 */ }
+            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
             return { ok: true, target: "online", lore: lore, tags: payload.tags };
         }
 
@@ -595,13 +589,13 @@ class Actions {
                     tag.setTag("display", display);
                 }
                 if (name) display.setString("Name", name);
-                else { try { display.removeTag("Name"); } catch (e) { /* 不存在 */ } }
+                else { try { display.removeTag("Name"); } catch (e) {  } }
                 if (tag !== nbt) nbt.setTag("tag", tag);
                 if (!item.setNbt(nbt)) throw new Error("setNbt 失败");
             }
             if (ct) ct.setItem(slot, item);
             this.app.shadow.setSlot(xuid, container, container === "offhand" ? 0 : slot, item, true);
-            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败 */ }
+            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
             return { ok: true, target: "online", name: name };
         }
 
@@ -623,7 +617,7 @@ class Actions {
         try { display = tag.getTag("display"); } catch (e) { display = null; }
         if (!display) { display = new NbtCompound(); tag.setTag("display", display); }
         if (name) display.setString("Name", name);
-        else { try { display.removeTag("Name"); } catch (e) { /* 不存在 */ } }
+        else { try { display.removeTag("Name"); } catch (e) {  } }
         if (tag !== nbt) nbt.setTag("tag", tag);
         entry.item.nbt = nbt.toSNBT();
         const res = writeOfflineSlots(uuid, slots, [container]);
@@ -661,12 +655,11 @@ class Actions {
                 target = nbt;
             }
             if (!enchants.length) {
-                try { target.removeTag(key); } catch (e) { /* 可能本来就不存在 */ }
+                try { target.removeTag(key); } catch (e) {  }
             } else {
                 const list = new NbtList();
                 for (const ench of enchants) {
                     const one = new NbtCompound();
-                    // 基岩版附魔 NBT 的 id 必须是数字 short，不能写 "minecraft:sharpness"。
                     one.setShort("id", ench.numeric);
                     one.setShort("lvl", ench.level);
                     list.addTag(one);
@@ -688,7 +681,7 @@ class Actions {
             if (!item.setNbt(nbt)) throw new Error("setNbt 失败");
             if (ct) ct.setItem(slot, item);
             this.app.shadow.setSlot(xuid, container, container === "offhand" ? 0 : slot, item, true);
-            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败不影响数据 */ }
+            try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
             return { ok: true, target: "online", enchants: enchants };
         }
 

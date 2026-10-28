@@ -61,7 +61,6 @@ function plainText(value) {
         const obj = JSON.parse(text);
         if (obj && typeof obj === "object") return String(obj.text || obj.translate || text);
     } catch (e) {
-        // 不是 JSON 文本
     }
     return text;
 }
@@ -90,7 +89,6 @@ function enchantMeta(list) {
         const numeric = Number(rawId);
         const id = String(rawId).trim();
         out.push({
-            // 基岩版 NBT 使用数字附魔 ID；前端使用名称 ID。
             id: Number.isFinite(numeric) && String(numeric) === id.trim() ? ("minecraft:" + (ENCHANT_NUM_TO_STR[numeric] || ("enchant_" + numeric))) : id,
             level: Number(entry.lvl || entry.level || entry.Level || 1)
         });
@@ -113,7 +111,7 @@ function tagValue(value) {
     if (value === null || value === undefined) return value;
     if (Array.isArray(value)) return value.map(tagValue);
     if (typeof value === "object") {
-        try { if (typeof value.get === "function") return tagValue(value.get()); } catch (e) { /* 非普通标签 */ }
+        try { if (typeof value.get === "function") return tagValue(value.get()); } catch (e) {  }
         try {
             if (typeof value.toArray === "function") return value.toArray().map(tagValue);
             if (typeof value.getSize === "function" && typeof value.getTag === "function") {
@@ -121,7 +119,7 @@ function tagValue(value) {
                 for (let i = 0; i < Number(value.getSize()); i++) out.push(tagValue(value.getTag(i)));
                 return out;
             }
-        } catch (e) { /* 非列表 */ }
+        } catch (e) {  }
     }
     return value;
 }
@@ -148,7 +146,6 @@ function customTagsOf(root) {
 
 function nestedItem(entry, options, depth) {
     if (!entry) return null;
-    // 收纳袋中子物品有时包在 item 字段里；兼容两种结构。
     const stack = entry.item && typeof entry.item === "object" ? entry.item : entry;
     const type = String(stack.Name || stack.name || stack.id || stack.t || "minecraft:air");
     if (type === "minecraft:air" || type === "air") return null;
@@ -251,7 +248,6 @@ function metaOf(item, snbt, options) {
     try {
         if (item.lore && item.lore.length) meta.lore = item.lore.map(plainText);
     } catch (e) {
-        // 物品对象可能没有这些属性
     }
     try {
         let nbt = item.getNbt ? item.getNbt() : null;
@@ -272,7 +268,7 @@ function metaOf(item, snbt, options) {
         }
         if (!meta.name) meta.name = translatedItemName(item.type);
         if (!meta.name) {
-            try { if (item.name) meta.name = String(item.name); } catch (e) { /* 无 name */ }
+            try { if (item.name) meta.name = String(item.name); } catch (e) {  }
         }
         meta.enchants = enchantMeta(tag.ench || tag.Enchantments || tag.enchantments);
         meta.storedEnchants = enchantMeta(tag.StoredEnchantments || tag.stored_enchantments);
@@ -291,14 +287,13 @@ function metaOf(item, snbt, options) {
             }).filter(Boolean);
         }
     } catch (e) {
-        // 元数据解析失败不影响物品本体，但关键路径留一次可追踪警告。
         try {
             const key = String(item && item.type || "?");
             if (META_WARNED.size < 50 && !META_WARNED.has(key)) {
                 META_WARNED.add(key);
                 log("warn", "物品元数据解析失败 " + key + ": " + e.message);
             }
-        } catch (ignored) { /* 日志失败 */ }
+        } catch (ignored) {  }
     }
     return meta;
 }
@@ -318,7 +313,6 @@ function serializeItem(item, options) {
         if (item.name) out.n = String(item.name);
         if (item.lore && item.lore.length) out.l = item.lore.map(String);
     } catch (e) {
-        // 某些物品对象可能没有这些属性
     }
 
     if (opt.meta !== false) out.meta = metaOf(item, null, opt);
@@ -352,12 +346,10 @@ function deserializeItem(data) {
         }
         if (nbtText) {
             const nbt = NBT.parseSNBT(nbtText);
-            // 网页改类型/数量时，NBT 里的旧 Name/Count 不能覆盖编辑值。
-            // 先把最终值写回根 NBT，再用 mc.newItem(nbt) 创建，与 LSE 物品编辑参考实现一致。
             try {
                 nbt.setString("Name", String(data.t));
                 nbt.setByte("Count", Math.max(1, Math.min(255, Number(data.c || 1))));
-            } catch (e) { /* 根 NBT 不允许时走类型创建 */ }
+            } catch (e) {  }
             const item = mc.newItem(nbt);
             if (item && typeof item.getNbt === "function") return item;
             const typed = mc.newItem(String(data.t), Math.max(1, Number(data.c || 1)));
@@ -423,7 +415,6 @@ function readPlayerSlots(player, options) {
             if (data) result.offhand.push({ slot: 0, item: data });
         }
     } catch (e) {
-        // 没有副手物品
     }
     return result;
 }
@@ -449,7 +440,6 @@ function nbtCompoundToSlot(comp, container, options) {
         data.nbtSize = utf8Bytes(snbt).length;
         if (options && options.full) data.nbt = snbt;
     } catch (e) {
-        // 忽略 NBT
     }
     return { slot: obj.Slot !== undefined ? Number(obj.Slot) : 0, item: data, container: container };
 }
@@ -495,7 +485,6 @@ function nbtListToSlots(list, container, options) {
             data.nbtSize = utf8Bytes(snbt).length;
             if (options && options.full) data.nbt = snbt;
         } catch (e) {
-            // 忽略 NBT
         }
         const slot = obj.Slot !== undefined ? Number(obj.Slot) : i;
         out.push({ slot: slot, item: data, container: container });
@@ -563,7 +552,6 @@ function itemSnbtForSlot(data, slot) {
         comp.setByte("Slot", slot);
         if (comp.hasTag && !comp.hasTag("Damage")) comp.setShort("Damage", Number(data.a || 0));
     } catch (e) {
-        // 忽略
     }
     return comp.toSNBT();
 }
@@ -628,7 +616,6 @@ function applyOnlineSlots(player, slots, scope, options) {
             const entry = slots.offhand && slots.offhand[0];
             try {
                 if (!entry) {
-                    // 空副手也必须主动清除，否则还原会保留当前副手物品。
                     if (typeof player.setOffHand === "function") player.setOffHand(null);
                 } else {
                     const data = entry.item || {};
@@ -660,7 +647,6 @@ function applyOnlineSlots(player, slots, scope, options) {
             try {
                 ct.removeItem(i, 999999);
             } catch (e) {
-                // 忽略
             }
         }
         const list = slots[name] || [];
@@ -671,11 +657,10 @@ function applyOnlineSlots(player, slots, scope, options) {
             try {
                 ct.setItem(Number(entry.slot), item);
             } catch (e) {
-                // 槽位不合法
             }
         }
     }
-    try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) { /* 刷新失败不影响数据 */ }
+    try { if (typeof player.refreshItems === "function") player.refreshItems(); } catch (e) {  }
 }
 
 export {

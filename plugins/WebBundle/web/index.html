@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebBundle 网页查包</title>
-  <link rel="stylesheet" href="app.css?v=123">
+  <link rel="stylesheet" href="app.css?v=1.1.0">
 </head>
 <body class="login-active">
   <div id="login" class="login-screen">
@@ -57,14 +57,14 @@
       <button class="rail-btn" data-view="flow" title="物品去向">
         <svg viewBox="0 0 24 24"><path d="M4 7h9v10H4zM13 10h4l3 3v4h-7zM7 20a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM17 20a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/></svg>
       </button>
+      <button class="rail-btn" data-view="map" title="容器地图">
+        <svg viewBox="0 0 24 24"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/></svg>
+      </button>
       <button class="rail-btn" data-view="command" title="网页指令">
         <svg viewBox="0 0 24 24"><path d="M5 6l6 6-6 6M13 18h6"/></svg>
       </button>
       <button class="rail-btn" data-view="audit" title="操作历史">
         <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6zM15 3v5h4M9 12h7M9 16h7"/></svg>
-      </button>
-      <button class="rail-btn" data-view="tasks" title="任务记录">
-        <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM8 9l2 2 4-4M8 15h8"/></svg>
       </button>
       <button class="rail-btn" data-view="settings" title="运行配置">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
@@ -246,6 +246,65 @@
       </section>
     </section>
 
+    <section id="view-map" class="view page-view">
+      <div class="page-head">
+        <div><span class="micro">容器地图 / CONTAINER MAP</span><h1>容器地图</h1></div>
+        <div class="page-head-side"><span class="micro">地图来源</span><b>ZXDash · Unmined</b><span id="map-status" class="micro">加载中</span></div>
+      </div>
+      <div class="map-toolbar">
+        <label class="flow-field"><span>维度</span><select id="map-dim"><option value="0">主世界</option><option value="1">下界</option><option value="2">末地</option></select></label>
+        <label class="flow-field"><span>模式</span><select id="map-mode"><option value="live">实时</option><option value="history">历史</option></select></label>
+        <label class="flow-field"><span>日期</span><input id="map-day" type="date"></label>
+        <label class="flow-field"><span>时间</span><input id="map-at" type="time"></label>
+        <button id="map-apply" class="btn dark" type="button">查看</button>
+        <button id="map-live" class="btn line" type="button">回到实时</button>
+        <button id="map-zoom-in" class="btn line" type="button">＋</button>
+        <button id="map-zoom-out" class="btn line" type="button">－</button>
+        <label class="map-check"><input id="map-crosshair" type="checkbox"> 坐标十字线</label>
+        <span id="map-count" class="filter-count">--</span>
+      </div>
+      <div class="map-layout">
+        <div id="map-stage" class="map-stage">
+          <canvas id="map-canvas"></canvas>
+          <div id="map-markers" class="map-markers"></div>
+          <div id="map-tooltip" class="map-tooltip hidden"></div>
+          <div class="map-legend"><i class="dot-container"></i>容器 <i class="dot-player"></i>玩家 <i class="dot-history"></i>历史</div>
+        </div>
+        <aside id="map-side" class="map-side">
+          <div class="card-head"><span class="micro">在线玩家</span><span id="map-player-count" class="micro">0</span></div>
+          <div id="map-player-list" class="map-player-list"><div class="ench-empty">当前没有在线玩家。</div></div>
+        </aside>
+      </div>
+      <div id="map-3d" class="map-3d hidden">
+        <div class="map-3d-head">
+          <span id="map-3d-title" class="micro">合并容器 / 3D</span>
+          <div class="map-3d-actions">
+            <button id="map-3d-explode" class="btn line" type="button">展开遮挡</button>
+            <button id="map-3d-close" class="btn line" type="button">关闭</button>
+          </div>
+        </div>
+        <div class="map-3d-controls">
+          <label class="map-3d-slider">水平展开 <input id="map-3d-explode-h" type="range" min="1" max="3" step="0.1" value="1.6"><output id="map-3d-explode-h-value">1.6×</output></label>
+          <label class="map-3d-slider">高度展开 <input id="map-3d-explode-v" type="range" min="1" max="3" step="0.1" value="1"><output id="map-3d-explode-v-value">1.0×</output></label>
+        </div>
+        <div id="map-3d-layerbar" class="map-3d-layerbar"></div>
+        <canvas id="map-3d-canvas"></canvas>
+        <div id="map-3d-list" class="map-3d-list"><div class="map-3d-list-head"><span>当前视图容器</span><button id="map-3d-clear" class="map-3d-list-clear" type="button">清空选择</button></div><div id="map-3d-list-items" class="map-3d-list-items"><div class="ench-empty">没有可见容器。</div></div></div>
+      </div>
+    </section>
+
+    <div id="map-container-modal" class="map-container-modal hidden">
+      <div class="map-container-modal-card">
+        <div class="map-container-modal-head">
+          <div><span class="micro">容器内容 / CONTAINER</span><h2 id="map-detail-title">容器内容</h2></div>
+          <button id="map-detail-close" class="btn line" type="button">关闭</button>
+        </div>
+        <div id="map-detail-meta" class="micro map-detail-meta"></div>
+        <div id="map-detail-grid" class="mc-grid map-modal-grid"></div>
+        <div id="map-detail-nested" class="map-detail-nested"></div>
+      </div>
+    </div>
+
     <section id="view-flow" class="view page-view">
       <div class="page-head">
         <div><span class="micro">物品去向 / ITEM FLOW</span><h1>物品去向</h1></div>
@@ -335,29 +394,19 @@
         <button class="chip" data-audit-filter="inventory">背包修改</button>
         <button class="chip" data-audit-filter="command">指令</button>
         <button class="chip" data-audit-filter="restore">还原</button>
+        <button class="chip" data-audit-filter="tasks">任务记录</button>
+        <span class="filter-count" id="audit-count">--</span>
         <button id="audit-verify" class="btn line">校验哈希链</button>
       </div>
       <div class="data-table audit-table">
         <div class="table-head"><span>时间</span><span>操作者</span><span>动作</span><span>目标 / 物品</span><span>结果</span><span>Hash</span></div>
         <div id="audit-rows"></div>
       </div>
-    </section>
-
-    <section id="view-tasks" class="view page-view">
-      <div class="page-head">
-        <div><span class="micro">任务记录 / TASKS</span><h1>任务记录</h1></div>
-        <div class="page-head-side"><span class="micro">离线队列</span><b id="task-offline-count" class="warn">-- 待执行</b></div>
+      <div class="list-pager">
+        <button id="audit-prev" class="btn line" type="button">上一页</button>
+        <span id="audit-page-label" class="mono">第 1 页</span>
+        <button id="audit-next" class="btn line" type="button">下一页</button>
       </div>
-      <div class="task-filters">
-        <button class="chip active" data-task-filter="all">全部</button>
-        <button class="chip" data-task-filter="queued">排队</button>
-        <button class="chip" data-task-filter="running">执行中</button>
-        <button class="chip" data-task-filter="succeeded">成功</button>
-        <button class="chip" data-task-filter="failed">失败</button>
-        <span class="filter-count" id="task-count">--</span>
-      </div>
-      <div class="task-list-head"><span>任务 ID</span><span>目标</span><span>状态</span><span>时间</span><span>结果</span></div>
-      <div id="task-rows" class="task-list"></div>
     </section>
 
     <section id="view-snapshots" class="view page-view">
@@ -373,6 +422,11 @@
         <div class="snapshot-main">
           <div class="snapshot-list-head"><span>备份时间</span><span>类型</span><span>玩家</span><span>物品</span><span>展开</span></div>
           <div id="snapshot-global-list" class="snapshot-folder-list"></div>
+          <div class="list-pager">
+            <button id="snapshot-prev" class="btn line" type="button">上一页</button>
+            <span id="snapshot-page-label" class="mono">第 1 页</span>
+            <button id="snapshot-next" class="btn line" type="button">下一页</button>
+          </div>
         </div>
         <aside class="snapshot-side">
           <div class="card-head"><span class="micro">备份策略</span></div>
@@ -410,6 +464,17 @@
             <div><span>角色</span><b id="set-role">--</b></div>
             <div><span>会话</span><b id="set-session">--</b></div>
           </div>
+        </section>
+        <section class="dash-card account-card">
+          <div class="card-head"><span class="micro">账号外放</span><span id="account-owner-state" class="micro">仅初始管理员可添加</span></div>
+          <form id="account-form" class="account-form" autocomplete="off">
+            <label><span>用户名</span><input id="account-username" required minlength="3" maxlength="32" placeholder="3-32 位"></label>
+            <label><span>密码</span><input id="account-password" type="password" required minlength="10" placeholder="至少 10 位"></label>
+            <label><span>确认密码</span><input id="account-confirm" type="password" required minlength="10"></label>
+            <label><span>角色</span><select id="account-role"><option value="viewer">只读</option><option value="operator">操作员</option><option value="admin">管理员</option></select></label>
+            <button id="account-add" class="btn signal" type="submit">添加账号</button>
+          </form>
+          <div id="account-list" class="account-list"></div>
         </section>
         <section class="dash-card">
           <div class="card-head"><span class="micro">模块状态</span></div>
@@ -555,6 +620,8 @@
   <div id="item-tip" class="item-tip hidden"></div>
   <div id="toast" class="toast"></div>
   <script src="pbkdf2.js?v=2"></script>
-  <script src="app.js?v=123"></script>
+  <script src="vendor/three.min.js?v=1"></script>
+  <script src="vendor/OrbitControls.js?v=1"></script>
+  <script src="app.js?v=1.1.0"></script>
 </body>
 </html>

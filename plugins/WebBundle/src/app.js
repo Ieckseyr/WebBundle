@@ -4,6 +4,7 @@
 import { loadConfig, log, readJson, JSON_DIR } from "./core.js";
 import { Store } from "./store.js";
 import { Recorder } from "./snapshot.js";
+import { ContainerTracker } from "./containers.js";
 import { Shadow } from "./shadow.js";
 import { Actions } from "./actions.js";
 import { ModuleHost } from "./modules/host.js";
@@ -50,6 +51,7 @@ function createApp() {
             log("warn", "清理测试玩家失败: " + e.message);
         }
         app.recorder = new Recorder(app);
+        app.containers = new ContainerTracker(app);
         app.extensions = new ExtensionRegistry(app);
         app.modules = new ModuleHost(app);
         app.modules.register(commandModule);
@@ -66,6 +68,7 @@ function createApp() {
         setTimeout(() => {
             try {
                 app.store.pruneFlow();
+                app.store.pruneContainers();
             } catch (e) {
                 log("warn", "物品去向保留期清理失败: " + e.message);
             }
@@ -81,6 +84,7 @@ function createApp() {
             log("warn", "注册卸载钩子失败: " + e.message);
         }
         app.bindEvents();
+        app.containers.start();
         log("info", "已加载，serverId=" + app.config.serverId + "，Web=" +
             (app.config.web.enabled ? app.config.web.host + ":" + app.config.web.port : "off"));
     };
@@ -90,14 +94,14 @@ function createApp() {
             app.shadow.onJoin(player);
             try {
                 if (app.logistics && typeof app.logistics.onJoin === "function") app.logistics.onJoin(player);
-            } catch (e) { /* 合成缓存初始化失败不影响背包 */ }
+            } catch (e) {  }
         });
 
         mc.listen("onLeft", (player) => {
             app.shadow.onLeft(player);
             try {
                 if (app.logistics && typeof app.logistics.onLeft === "function") app.logistics.onLeft(player);
-            } catch (e) { /* 清理合成缓存失败不影响退服 */ }
+            } catch (e) {  }
         });
 
         mc.listen("onInventoryChange", (player, slot, oldItem, newItem) => {
@@ -106,7 +110,7 @@ function createApp() {
                 if (app.logistics && typeof app.logistics.onInventoryChange === "function") {
                     app.logistics.onInventoryChange(player, slot, oldItem, newItem);
                 }
-            } catch (e) { /* 合成事件检查失败不影响背包 */ }
+            } catch (e) {  }
         });
 
         mc.listen("onSetArmor", (player, slot, item) => {
@@ -138,21 +142,19 @@ function createApp() {
                     app.shadow.onJoin(player);
                     try {
                         if (app.logistics && typeof app.logistics.onJoin === "function") app.logistics.onJoin(player);
-                    } catch (e) { /* 合成缓存初始化失败 */ }
+                    } catch (e) {  }
                 }
             }, 1500);
         });
     };
 
     app.dispose = function () {
-        // 引擎卸载前先释放 HttpServer 包装对象；这是 LSE 0.21.3 的
-        // HttpServerCallback/QuickJS 析构顺序保护，必须早于 app.shutdown 的落盘。
         try {
             if (app.external) app.external.stop();
-        } catch (e) { /* 忽略 */ }
+        } catch (e) {  }
         try {
             if (app.web) app.web.stop();
-        } catch (e) { /* 忽略 */ }
+        } catch (e) {  }
         try {
             app.shutdown();
         } catch (e) {
@@ -164,7 +166,6 @@ function createApp() {
         if (!app.started) return;
         app.started = false;
         log("info", "关服清理开始：停止网页、推送并落盘");
-        // 必须先停推送和 HttpServer，再让 LSE 释放 QuickJS 回调。
         try {
             if (app.external) app.external.stop();
         } catch (e) {

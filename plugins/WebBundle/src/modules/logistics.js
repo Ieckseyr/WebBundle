@@ -7,7 +7,7 @@ import { log } from "../core.js";
 export const logisticsModule = {
     id: "logistics",
     name: "物品去向记录",
-    version: "1.0.0",
+    version: "1.1.0",
     setup(ctx) {
         const app = ctx.app;
         let seq = 0;
@@ -60,7 +60,6 @@ export const logisticsModule = {
             const output = outputs[0] || null;
             const consumedKey = inputs.map((item) => String(item.type || "") + "x" + Number(item.count || 0)).sort().join(",");
             const gainedKey = outputs.map((item) => String(item.type || "") + "x" + Number(item.count || 0)).sort().join(",");
-            // UI 轮询和手动 flow.craft 可能同时上报同一次合成，2 秒内同内容只保留一条。
             const existing = app.state.flow.find((event) => event.kind === "craft" &&
                 String(event.xuid) === String(player.xuid) &&
                 Number(event.ts || 0) > Date.now() - 2000 &&
@@ -174,16 +173,13 @@ export const logisticsModule = {
                         const counts = inventoryCounts(player, cursor);
                         const previous = uiCraftState.get(String(player.xuid));
                         let pending = previous && previous.pending ? previous.pending : null;
-                        // 合成栏材料减少：先挂起，等产物真正进入背包/光标后再记账。
                         if (previous && previous.inputCount > inputCount) {
                             pending = { inputs: previous.inputs, counts: previous.counts, ts: Date.now() };
-                            // log("info", "合成栏变化: " + String(player.name || "") + " " + previous.inputs.map((entry) => entry.Name + "x" + entry.Count).join("+") + " -> " + inputCount);
                         }
                         if (pending && Date.now() - pending.ts < 1800) {
                             const inputTypes = new Set((pending.inputs || []).map((entry) => String(entry.Name || "")));
                             const gained = [];
                             for (const type of Object.keys(counts)) {
-                                // 关闭合成界面时材料会原样回到背包，不能当成合成产物。
                                 if (inputTypes.has(type)) continue;
                                 const delta = Number(counts[type] || 0) - Number(pending.counts[type] || 0);
                                 if (delta > 0) gained.push({ type: type, count: delta });
@@ -205,11 +201,9 @@ export const logisticsModule = {
                             pending: pending
                         });
                     } catch (e) {
-                        // 单个玩家的 UI 数据异常不影响其他玩家
                     }
                 }
             } catch (e) {
-                // 忽略轮询异常
             }
         }
 
@@ -225,7 +219,7 @@ export const logisticsModule = {
                             refreshInventoryCache(current);
                             pollCraftingUi([current]);
                         }
-                    } catch (e) { /* 玩家已离开 */ }
+                    } catch (e) {  }
                 }, 1500);
             },
             onLeft: (player) => {

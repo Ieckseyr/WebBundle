@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 WebBundle contributors
 
-// 纯 JS SHA-256。qjs 没有 crypto 模块，审计链需要稳定的十六进制摘要。
 function utf8Bytes(str) {
     const out = [];
     for (let i = 0; i < str.length; i++) {

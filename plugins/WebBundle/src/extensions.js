@@ -38,7 +38,7 @@ class ExtensionRegistry {
         };
         this.pages.set(key, page);
         log("info", "扩展页面已注册: " + key + " (" + page.label + ")");
-        try { if (this.app.external && this.app.external.enabled) this.app.external.pushExtensions(); } catch (e) { /* 推送失败由 external 记录 */ }
+        try { if (this.app.external && this.app.external.enabled) this.app.external.pushExtensions(); } catch (e) {  }
         return page;
     }
 

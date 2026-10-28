@@ -30,6 +30,11 @@ const DEFAULT_CONFIG = {
         maxEvents: 100000,
         pageSize: 50
     },
+    container: {
+        retentionDays: 90,
+        maxContainers: 50000,
+        clusterRadius: 4
+    },
     external: {
         enabled: false,
         url: "",
@@ -53,7 +58,6 @@ function log(level, msg) {
         else if (typeof logger !== "undefined" && logger.info) logger.info(line);
         else if (typeof log === "function") log(line);
     } catch (e) {
-        // 日志失败不影响主流程
     }
 }
 

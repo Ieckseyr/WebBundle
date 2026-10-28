@@ -3,7 +3,7 @@
   "use strict";
 
   const COOKIE_AUTH = !!window.WB_COOKIE_AUTH;
-  const VIEW_ORDER = ["overview", "players", "snapshots", "flow", "command", "audit", "tasks", "settings", "last"];
+  const VIEW_ORDER = ["overview", "players", "snapshots", "flow", "map", "command", "audit", "settings", "last"];
   const FILE_MODE = location.protocol === "file:";
   const STANDALONE = !!window.WB_STANDALONE;
   const AUTHED = window.WB_AUTHED !== false;
@@ -28,9 +28,33 @@
     flowHasMore: false,
     flowSummary: null,
     flowSearchTimer: null,
+    map: {
+      meta: null,
+      mode: "live",
+      dim: 0,
+      day: "",
+      at: 0,
+      clusters: [],
+      containers: [],
+      players: [],
+      center: { x: 0, z: 0 },
+      scale: 0.5,
+      initialized: false,
+      dragging: false,
+      dragStart: null,
+      hover: null,
+      three: null
+    },
     audit: [],
+    auditPage: 1,
+    auditPageSize: 25,
+    auditFilter: "all",
     tasks: [],
+    owner: false,
+    accounts: [],
     snapshots: [],
+    snapshotPage: 1,
+    snapshotPageSize: 10,
     snapshotKey: "",
     globalSnapshots: [],
     globalSnapshotsKey: "",
@@ -163,7 +187,6 @@
     if (window.crypto && window.crypto.getRandomValues) {
       window.crypto.getRandomValues(bytes);
     } else {
-      // 纯 HTTP 的老浏览器可能没有 WebCrypto；首次设置仍需生成盐。
       for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
     }
     return bytesToHex(bytes);
@@ -183,11 +206,9 @@
         }, key, 256);
         return bytesToHex(new Uint8Array(bits));
       } catch (e) {
-        // 某些旧浏览器存在 crypto.subtle 但 PBKDF2 不可用，继续走后备实现。
       }
     }
     if (window.WBPBKDF2 && typeof window.WBPBKDF2.deriveHex === "function") {
-      // 非安全上下文（常见于 http://192.168.x.x）拿不到 crypto.subtle。
       await new Promise((resolve) => setTimeout(resolve, 30));
       return await window.WBPBKDF2.deriveHexAsync(password, saltHex, Number(iterations || 210000), (ratio) => {
         const button = $("login-submit");
@@ -638,6 +659,7 @@
     if (!meta) return;
     state.meta = meta;
     state.role = meta.role || "viewer";
+    state.owner = !!meta.owner;
     $("server-name").textContent = meta.serverName || meta.serverId || "BDS";
     $("server-id").textContent = meta.serverId || "SRV-01";
     $("page-as-of").textContent = fmtDate(meta.dataAsOf || Date.now());
@@ -967,7 +989,9 @@
     applyDrawerReadonly(state.nestedReadOnly);
     hideItemTip();
     document.body.classList.add("drawer-open");
-    switchDrawerTab("detail");
+    const itemContents = item.meta && Array.isArray(item.meta.containerItems) ? item.meta.containerItems : [];
+    const containerItem = itemContents.length > 0 || /shulker_box|bundle/i.test(String(item.t || ""));
+    switchDrawerTab(containerItem ? "container" : "detail");
     if (!item.nbt && item.nbtRef) {
       const targetItem = state.activeItem && state.activeItem.item;
       $("drawer-nbt").value = "正在读取完整 SNBT…";
@@ -1079,8 +1103,13 @@
     const dur = item.meta && item.meta.durMax ? `<div class="tip-line">耐久 ${item.meta.durCur} / ${item.meta.durMax}</div>` : "";
     const enchText = enchants.slice(0, 6).map((e) => `<div class="tip-ench">${esc(enchantName(e.id))} ${toRoman(e.level)} (${e.level})</div>`).join("");
     const loreText = lore.length ? `<div class="tip-lore">${lore.slice(0, 4).map(esc).join("<br>")}</div>` : "";
-    const container = item.meta && item.meta.containerItems && item.meta.containerItems.length
-      ? `<div class="tip-line">容器内容 ${item.meta.containerItems.length} 项（悬停不展开）</div>` : "";
+    const children = item.meta && Array.isArray(item.meta.containerItems) ? item.meta.containerItems : [];
+    const preview = children.slice(0, 5).map((child) =>
+      `<div class="tip-line">${esc(itemName(child))} ×${Number(child.c || 1)}</div>`).join("");
+    const container = children.length
+      ? `<div class="tip-line">容器内容 ${children.length} 项</div>${preview}` +
+        (children.length > 5 ? `<div class="tip-line">还有 ${children.length - 5} 项</div>` : "")
+      : "";
     tip.innerHTML = `<div class="tip-name">${esc(itemName(item))}</div>
       <div class="tip-type">${esc(item.t)}${Number(item.c || 1) > 1 ? " ×" + Number(item.c || 1) : ""}</div>
       ${dur}${enchText}${container}${loreText}
@@ -1388,7 +1417,10 @@
     const verify = data.auditVerify || {};
     $("kpi-audit").textContent = verify.valid ? "完整" : "需检查";
     $("kpi-audit-detail").textContent = "共 " + (verify.count || 0) + " 条记录";
-    $("overview-players").innerHTML = (data.players || []).map((p, i) => `
+    $("overview-players").innerHTML = (data.players || [])
+      .filter((p) => p.online)
+      .sort((a, b) => String(a.name || a.xuid).localeCompare(String(b.name || b.xuid), "zh-CN"))
+      .map((p, i) => `
       <div class="player-row" data-overview-xuid="${esc(p.xuid)}">
         <span class="player-index">${String(i + 1).padStart(3, "0")}</span>
         <span><span class="player-name">${esc(p.name || p.xuid)}</span></span>
@@ -1587,35 +1619,1393 @@
     }, 280);
   }
 
+  function mapDateValue() {
+    const d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  function mapTimeValue() {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+
+  function mapTimestamp() {
+    const day = $("map-day").value || mapDateValue();
+    const time = $("map-at").value || "00:00";
+    return new Date(day + "T" + time).getTime();
+  }
+
+  function mapFolder(dim) {
+    const found = (state.map.meta && state.map.meta.dimensions || []).find((d) => Number(d.id) === Number(dim));
+    return found ? found.tile : (Number(dim) === 1 ? "nether" : (Number(dim) === 2 ? "the_end" : "overworld"));
+  }
+
+  function mapWorldToScreen(x, z) {
+    const canvas = $("map-canvas");
+    const width = canvas ? canvas.clientWidth : 800;
+    const height = canvas ? canvas.clientHeight : 560;
+    return {
+      x: width / 2 + (Number(x || 0) - state.map.center.x) * state.map.scale,
+      y: height / 2 + (Number(z || 0) - state.map.center.z) * state.map.scale
+    };
+  }
+
+  const mapTiles = new Map();
+
+  function mapTileEntry(folder, level, tx, tz) {
+    const key = folder + "/" + level + "/" + tx + "_" + tz;
+    if (mapTiles.has(key)) return mapTiles.get(key);
+    const entry = { image: null, sourceFactor: 1, offsetX: 0, offsetZ: 0, state: "loading" };
+    mapTiles.set(key, entry);
+    const tryLoad = (sourceLevel, sourceTx, sourceTz) => {
+      const image = new Image();
+      image.onload = () => {
+        const factor = Math.pow(2, sourceLevel - level);
+        entry.image = image;
+        entry.sourceFactor = factor;
+        entry.offsetX = tx - Math.floor(tx / factor) * factor;
+        entry.offsetZ = tz - Math.floor(tz / factor) * factor;
+        entry.state = "ok";
+        mapDraw();
+      };
+      image.onerror = () => {
+        if (sourceLevel >= 14) {
+          entry.state = "failed";
+          return;
+        }
+        const next = sourceLevel + 1;
+        tryLoad(next, Math.floor(tx / Math.pow(2, next - level)), Math.floor(tz / Math.pow(2, next - level)));
+      };
+      image.src = "/api/v1/map/tiles/" + folder + "/" + sourceLevel + "/" + sourceTx + "/" + sourceTz;
+    };
+    tryLoad(level, tx, tz);
+    return entry;
+  }
+
+  function mapDraw() {
+    const canvas = $("map-canvas");
+    if (!canvas) return;
+    const stage = $("map-stage");
+    const width = Math.max(320, stage.clientWidth);
+    const height = Math.max(320, stage.clientHeight);
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#e8e8e1";
+    ctx.fillRect(0, 0, width, height);
+    const scale = state.map.scale;
+    const level = Math.max(0, Math.min(14, Math.round(Math.log2(1 / Math.max(scale, 0.001)))));
+    const tileWorld = 256 * Math.pow(2, level);
+    const halfW = width / 2 / scale;
+    const halfH = height / 2 / scale;
+    const minX = state.map.center.x - halfW;
+    const maxX = state.map.center.x + halfW;
+    const minZ = state.map.center.z - halfH;
+    const maxZ = state.map.center.z + halfH;
+    const minTx = Math.floor(minX / tileWorld);
+    const maxTx = Math.floor(maxX / tileWorld);
+    const minTz = Math.floor(minZ / tileWorld);
+    const maxTz = Math.floor(maxZ / tileWorld);
+    const folder = mapFolder(state.map.dim);
+    let count = 0;
+    for (let tx = minTx; tx <= maxTx; tx++) {
+      for (let tz = minTz; tz <= maxTz; tz++) {
+        if (count++ > 120) break;
+        const key = folder + "/" + level + "/" + tx + "_" + tz;
+        const entry = mapTileEntry(folder, level, tx, tz);
+        if (entry.state !== "ok" || !entry.image) continue;
+        const left = ((tx * tileWorld) - state.map.center.x) * scale + width / 2;
+        const top = ((tz * tileWorld) - state.map.center.z) * scale + height / 2;
+        const size = tileWorld * scale;
+        const sourceSize = 256 / entry.sourceFactor;
+        ctx.drawImage(entry.image, entry.offsetX * sourceSize, entry.offsetZ * sourceSize, sourceSize, sourceSize, left, top, size, size);
+        ctx.strokeStyle = "rgba(14,14,14,.08)";
+        ctx.strokeRect(left, top, size, size);
+      }
+    }
+    ctx.fillStyle = "rgba(14,14,14,.45)";
+    ctx.font = "10px 'Space Grotesk', Consolas, monospace";
+    ctx.fillText("WORLD " + Math.round(state.map.center.x) + ", " + Math.round(state.map.center.z), 12, height - 12);
+    const crosshairOn = $("map-crosshair") && $("map-crosshair").checked;
+    const steps = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
+    const step = steps.find((value) => value * scale >= 56) || 8192;
+    const startX = Math.floor(minX / step) * step;
+    const startZ = Math.floor(minZ / step) * step;
+    ctx.font = "9px 'Space Grotesk', Consolas, monospace";
+    for (let gx = startX; gx <= maxX; gx += step) {
+      const px = (gx - state.map.center.x) * scale + width / 2;
+      if (crosshairOn) {
+        ctx.strokeStyle = "rgba(14,14,14,.18)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, height); ctx.stroke();
+      }
+      if (px > 18 && px < width - 26) {
+        ctx.fillStyle = "rgba(244,244,238,.88)";
+        ctx.fillRect(px - 1, 0, 39, 13);
+        ctx.fillStyle = "rgba(14,14,14,.68)";
+        ctx.fillText(String(gx), px + 3, 10);
+        ctx.fillStyle = "rgba(14,14,14,.5)";
+        ctx.fillRect(px, 13, 1, 4);
+      }
+    }
+    for (let gz = startZ; gz <= maxZ; gz += step) {
+      const py = (gz - state.map.center.z) * scale + height / 2;
+      if (crosshairOn) {
+        ctx.strokeStyle = "rgba(14,14,14,.18)";
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(width, py); ctx.stroke();
+      }
+      if (py > 18 && py < height - 10) {
+        ctx.fillStyle = "rgba(244,244,238,.88)";
+        ctx.fillRect(0, py - 10, 42, 13);
+        ctx.fillStyle = "rgba(14,14,14,.68)";
+        ctx.fillText(String(gz), 5, py - 1);
+        ctx.fillStyle = "rgba(14,14,14,.5)";
+        ctx.fillRect(42, py, 4, 1);
+      }
+    }
+    ctx.fillStyle = "rgba(14,14,14,.55)";
+    if (crosshairOn) {
+      ctx.strokeStyle = "rgba(224,47,120,.9)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(width / 2, 0); ctx.lineTo(width / 2, height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, height / 2); ctx.lineTo(width, height / 2); ctx.stroke();
+      ctx.fillStyle = "#0e0e0e";
+      ctx.fillRect(width / 2 - 1, height / 2 - 1, 3, 3);
+      ctx.fillStyle = "rgba(244,244,238,.92)";
+      ctx.fillRect(width / 2 + 5, height / 2 + 5, 122, 15);
+      ctx.fillStyle = "#0e0e0e";
+      ctx.fillText("X " + Math.round(state.map.center.x) + " / Z " + Math.round(state.map.center.z), width / 2 + 9, height / 2 + 16);
+    }
+    mapRenderMarkers();
+  }
+
+  function mapShowTip(html, event) {
+    const tip = $("map-tooltip");
+    const stage = $("map-stage");
+    if (!tip || !stage) return;
+    const rect = stage.getBoundingClientRect();
+    tip.innerHTML = html;
+    tip.classList.remove("hidden");
+    tip.style.left = Math.min(rect.width - 270, Math.max(6, event.clientX - rect.left + 12)) + "px";
+    tip.style.top = Math.min(rect.height - 150, Math.max(6, event.clientY - rect.top + 12)) + "px";
+  }
+
+  function mapHideTip() {
+    const tip = $("map-tooltip");
+    if (tip) tip.classList.add("hidden");
+  }
+
+  function mapPreviewHtml(cluster) {
+    const items = cluster && Array.isArray(cluster.items) ? cluster.items : [];
+    const count = Number(cluster && cluster.count || items.length || 1);
+    const xs = items.map((item) => Number(item.x || 0));
+    const ys = items.map((item) => Number(item.y || 0));
+    const zs = items.map((item) => Number(item.z || 0));
+    const minX = xs.length ? Math.min(...xs) : Number(cluster && cluster.x || 0);
+    const maxX = xs.length ? Math.max(...xs) : Number(cluster && cluster.x || 0);
+    const minY = ys.length ? Math.min(...ys) : 0;
+    const maxY = ys.length ? Math.max(...ys) : 0;
+    const minZ = zs.length ? Math.min(...zs) : Number(cluster && cluster.z || 0);
+    const maxZ = zs.length ? Math.max(...zs) : Number(cluster && cluster.z || 0);
+    const range = (a, b) => a === b ? String(a) : a + "–" + b;
+    const first = items[0] || {};
+    const preview = first.preview || [];
+    const previewHtml = preview.map((item) => esc(itemName(item)) + " ×" + Number(item.c || 1)).join("<br>");
+    return "<b>此处 " + count + " 个容器</b><br>" +
+      "<span class=\"map-tip-range\">X " + range(minX, maxX) + " · Y " + range(minY, maxY) + " · Z " + range(minZ, maxZ) + "</span><br>" +
+      "<span class=\"map-tip-type\">" + esc(first.name || first.type || "容器") + (first.itemCount != null ? " · " + Number(first.itemCount) + " 件" : "") + "</span>" +
+      (previewHtml ? "<br>" + previewHtml : "") +
+      (first.previewMore ? "<br>还有 " + Number(first.previewMore) + " 项" : "");
+  }
+
+  function mapRenderMarkers() {
+    const host = $("map-markers");
+    if (!host) return;
+    host.innerHTML = "";
+    const clusters = state.map.clusters || [];
+    for (const cluster of clusters) {
+      const pos = mapWorldToScreen(cluster.x, cluster.z);
+      if (pos.x < -40 || pos.y < -40 || pos.x > host.clientWidth + 40 || pos.y > host.clientHeight + 40) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "map-marker" + (cluster.count > 1 ? " cluster" : "") + (cluster.items && cluster.items[0] && cluster.items[0].state === "removed" ? " history" : "");
+      const first = cluster.items && cluster.items[0];
+      button.innerHTML = (first ? iconImg(first.type, first.name || itemName({ t: first.type }), false) : "<b>◆</b>") +
+        (cluster.count > 1 ? `<b class="map-marker-count">${cluster.count}</b>` : "");
+      button.style.left = pos.x + "px";
+      button.style.top = pos.y + "px";
+      button.addEventListener("mouseenter", (event) => mapShowTip(mapPreviewHtml(cluster), event));
+      button.addEventListener("mousemove", (event) => mapShowTip(mapPreviewHtml(cluster), event));
+      button.addEventListener("mouseleave", mapHideTip);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (cluster.count > 1) openMap3D(cluster.items || []);
+        else if (first) openMapContainer(first.id);
+      });
+      host.appendChild(button);
+    }
+    for (const player of state.map.players || []) {
+      if (Number(player.dim) !== Number(state.map.dim)) continue;
+      const pos = mapWorldToScreen(player.x, player.z);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "map-marker player";
+      button.textContent = String(player.name || "?").slice(0, 1);
+      button.style.background = mapPlayerColor(player);
+      button.style.borderColor = mapPlayerColor(player);
+      button.style.left = pos.x + "px";
+      button.style.top = pos.y + "px";
+      button.title = String(player.name || player.xuid);
+      button.addEventListener("click", (event) => { event.stopPropagation(); });
+      host.appendChild(button);
+    }
+  }
+
+  async function loadMapPlayers() {
+    try {
+      state.map.players = await api("/map/players");
+      renderMapPlayers();
+      $("map-player-count").textContent = String(state.map.players.filter((p) => Number(p.dim) === Number(state.map.dim)).length);
+      mapDraw();
+    } catch (e) {  }
+  }
+
+  function mapClusterItems(items, maxPoints) {
+    const limit = Math.max(1, Math.min(100, Number(maxPoints || 100)));
+    const list = (items || []).slice().sort((a, b) => {
+      const da = (a.x - state.map.center.x) ** 2 + (a.z - state.map.center.z) ** 2;
+      const db = (b.x - state.map.center.x) ** 2 + (b.z - state.map.center.z) ** 2;
+      return da - db;
+    });
+    const threshold = 26;
+    const groups = [];
+    for (const item of list) {
+      const pos = mapWorldToScreen(item.x, item.z);
+      let best = null;
+      let bestDist = threshold;
+      for (const group of groups) {
+        const dx = group.px - pos.x;
+        const dz = group.py - pos.y;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < bestDist) { best = group; bestDist = dist; }
+      }
+      if (best) {
+        best.items.push(item);
+        best.count += 1;
+        best.px = (best.px * (best.count - 1) + pos.x) / best.count;
+        best.py = (best.py * (best.count - 1) + pos.y) / best.count;
+        best.x = (best.x * (best.count - 1) + item.x) / best.count;
+        best.z = (best.z * (best.count - 1) + item.z) / best.count;
+      } else {
+        groups.push({ id: "screen:" + item.id, dim: item.dim, x: item.x, z: item.z, px: pos.x, py: pos.y, count: 1, items: [item] });
+      }
+    }
+    return groups.map((group) => ({
+      id: group.id,
+      dim: group.dim,
+      x: Math.round(group.x),
+      z: Math.round(group.z),
+      count: group.count,
+      items: group.items
+    })).sort((a, b) => {
+      const da = (a.x - state.map.center.x) ** 2 + (a.z - state.map.center.z) ** 2;
+      const db = (b.x - state.map.center.x) ** 2 + (b.z - state.map.center.z) ** 2;
+      return da - db;
+    }).slice(0, limit);
+  }
+
+  async function loadMapContainers() {
+    try {
+      const params = new URLSearchParams();
+      params.set("dim", String(state.map.dim));
+      params.set("limit", "1000");
+      params.set("cx", String(Math.round(state.map.center.x)));
+      params.set("cz", String(Math.round(state.map.center.z)));
+      if (state.map.mode === "history") {
+        params.set("day", $("map-day").value || mapDateValue());
+        params.set("at", String(mapTimestamp()));
+      }
+      const data = await api("/map/containers?" + params.toString());
+      state.map.containers = data.items || [];
+      const playerCount = state.map.players.filter((player) => Number(player.dim) === Number(state.map.dim)).length;
+      state.map.clusters = mapClusterItems(state.map.containers, Math.max(1, 100 - playerCount));
+      if (!state.map.initialized && state.map.containers.length) {
+        state.map.center = { x: Number(state.map.containers[0].x || 0), z: Number(state.map.containers[0].z || 0) };
+        state.map.initialized = true;
+      }
+      $("map-count").textContent = state.map.mode === "history"
+        ? "历史 " + state.map.clusters.length + " 个标点 / " + state.map.containers.length + " 个容器"
+        : "当前 " + state.map.clusters.length + " 个标点 / " + state.map.containers.length + " 个容器";
+      $("map-status").textContent = state.map.mode === "history" ? "历史快照" : "实时";
+      mapDraw();
+    } catch (e) {
+      if (!e.auth) toast("容器地图读取失败: " + e.message);
+    }
+  }
+
+  function mapScheduleReload() {
+    if (state.map.reloadTimer) clearTimeout(state.map.reloadTimer);
+    state.map.reloadTimer = setTimeout(() => {
+      state.map.reloadTimer = null;
+      loadMapContainers();
+    }, 180);
+  }
+
+  function mapPlayerColor(player) {
+    const palette = ["#1f9dda", "#e04f9a", "#2fa36b", "#e08a2e", "#7a5bd6", "#d4453e", "#168c8c", "#a56a2b"];
+    const key = String(player && (player.xuid || player.name) || "");
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    return palette[hash % palette.length];
+  }
+
+  function renderMapPlayers() {
+    const host = $("map-player-list");
+    if (!host) return;
+    const players = (state.map.players || []).filter((player) => Number(player.dim) === Number(state.map.dim));
+    host.innerHTML = players.map((player) => `
+      <button type="button" class="map-player-row" data-map-player="${esc(player.xuid)}">
+        <i style="background:${mapPlayerColor(player)}"></i>
+        <span>${esc(player.name || player.xuid)}</span>
+        <small>${Math.round(Number(player.x || 0))}, ${Math.round(Number(player.z || 0))}</small>
+      </button>`).join("") || '<div class="ench-empty">当前没有在线玩家。</div>';
+    host.querySelectorAll("[data-map-player]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const player = players.find((entry) => String(entry.xuid) === button.dataset.mapPlayer);
+        if (!player) return;
+        state.map.center = { x: Number(player.x || 0), z: Number(player.z || 0) };
+        state.map.scale = Math.max(state.map.scale, 0.35);
+        state.map.initialized = true;
+        mapDraw();
+        loadMapContainers();
+      });
+    });
+  }
+
+  async function loadMap() {
+    try {
+      if (!state.map.meta) {
+        state.map.meta = await api("/map/meta");
+        if (!$("map-day").value) $("map-day").value = mapDateValue();
+        if (!$("map-at").value) $("map-at").value = mapTimeValue();
+      }
+      await loadMapPlayers();
+      await loadMapContainers();
+      if (!state.map.initialized && state.map.players.length) {
+        const p = state.map.players.find((entry) => Number(entry.dim) === Number(state.map.dim)) || state.map.players[0];
+        state.map.center = { x: Number(p.x || 0), z: Number(p.z || 0) };
+        state.map.initialized = true;
+      }
+      mapDraw();
+    } catch (e) {
+      $("map-status").textContent = "地图不可用";
+      if (!e.auth) toast("地图初始化失败: " + e.message);
+    }
+  }
+
+  function mapNestedMarkup(item, depth) {
+    const children = item && item.meta && Array.isArray(item.meta.containerItems) ? item.meta.containerItems : [];
+    if (!children.length || depth > 3) return "";
+    return `<details class="map-nested"${depth === 1 ? " open" : ""}><summary>${esc(itemName(item))} 内 ${children.length} 项</summary>` +
+      children.map((child) => `<div class="map-nested-item">${iconImg(child.t, itemName(child), true)}<span>${esc(itemName(child))}</span><b>×${Number(child.c || 1)}</b>${mapNestedMarkup(child, depth + 1)}</div>`).join("") +
+      "</details>";
+  }
+
+  async function openMapContainer(id) {
+    try {
+      const at = state.map.mode === "history" ? mapTimestamp() : 0;
+      const data = await api("/containers/" + encodeURIComponent(id) + (at ? "?at=" + at : ""));
+      const obs = data.observation || {};
+      const items = Array.isArray(obs.items) ? obs.items : [];
+      const size = Number(obs.size || data.size || 27);
+      const slotCount = Number.isFinite(size) && size > 0 ? size : 27;
+      const typeLabel = mapContainerTypeLabel(data.type);
+      const large = String(data.type || "").toLowerCase().indexOf("chest") >= 0 && slotCount > 27;
+      const gridSize = large ? 54 : slotCount;
+      $("map-detail-title").textContent = typeLabel + " · " + (data.name || data.type);
+      $("map-detail-meta").textContent = "坐标 " + data.x + ", " + data.y + ", " + data.z +
+        " · " + (obs.at ? fmtDate(obs.at) : "无观测") + " · " + (large ? "6×9" : slotCount) + (large ? "" : " 格");
+      const bySlot = new Map(items.map((entry) => [Number(entry.slot), entry.item || {}]));
+      const grid = [];
+      for (let i = 0; i < gridSize; i++) {
+        const item = bySlot.get(i);
+        grid.push(item
+          ? `<div class="slot map-detail-slot" title="${esc(itemName(item))}">${iconImg(item.t, itemName(item), false)}<span class="count">${Number(item.c || 1)}</span></div>`
+          : '<div class="slot empty map-detail-slot"></div>');
+      }
+      $("map-detail-grid").innerHTML = grid.join("");
+      const nested = items.map((entry) => mapNestedMarkup(entry.item, 1)).filter(Boolean).join("");
+      $("map-detail-nested").innerHTML = nested;
+      $("map-container-modal").classList.remove("hidden");
+    } catch (e) {
+      toast("容器读取失败: " + e.message);
+    }
+  }
+
+  function map3dBuildLayers(items) {
+    const list = (items || []).filter(Boolean);
+    const bandStart = (y) => y >= 1
+      ? Math.floor((y - 1) / 16) * 16 + 1
+      : Math.floor((y + 15) / 16) * 16 - 15;
+    const groups = new Map();
+    for (const item of list) {
+      const x = Number(item.x || 0);
+      const y = Number(item.y || 0);
+      const z = Number(item.z || 0);
+      const startY = bandStart(y);
+      const chunkX = Math.floor(x / 16);
+      const chunkZ = Math.floor(z / 16);
+      const key = startY + ":" + chunkX + ":" + chunkZ;
+      if (!groups.has(key)) {
+        groups.set(key, { startY: startY, chunkX: chunkX, chunkZ: chunkZ, items: [] });
+      }
+      groups.get(key).items.push(item);
+    }
+    const layers = Array.from(groups.values()).map((group) => {
+      const capped = group.items.slice(0, 256);
+      return {
+        items: capped,
+        minX: Math.min(...capped.map((item) => Number(item.x || 0))),
+        maxX: Math.max(...capped.map((item) => Number(item.x || 0))),
+        minY: group.startY,
+        maxY: group.startY + 15,
+        minZ: Math.min(...capped.map((item) => Number(item.z || 0))),
+        maxZ: Math.max(...capped.map((item) => Number(item.z || 0))),
+        actualMinY: Math.min(...capped.map((item) => Number(item.y || 0))),
+        actualMaxY: Math.max(...capped.map((item) => Number(item.y || 0))),
+        avgY: capped.reduce((sum, item) => sum + Number(item.y || 0), 0) / capped.length,
+        chunkX: group.chunkX,
+        chunkZ: group.chunkZ,
+        truncated: group.items.length > capped.length
+      };
+    });
+    layers.sort((a, b) => b.minY - a.minY || a.chunkX - b.chunkX || a.chunkZ - b.chunkZ);
+    layers.forEach((layer, index) => { layer.index = index; });
+    return layers;
+  }
+
+  const map3dThree = {
+    ready: false,
+    renderer: null,
+    scene: null,
+    camera: null,
+    controls: null,
+    group: null,
+    boxes: [],
+    containers: [],
+    explode: 0,
+    explodeTarget: 0,
+    explodeH: 1.6,
+    explodeV: 1.0,
+    selectedId: "",
+    listSignature: "",
+    lastListAt: 0,
+    raf: 0,
+    center: null,
+    radius: 10,
+    pointer: null
+  };
+
+  function map3dInitThree() {
+    if (map3dThree.ready) return true;
+    if (!window.THREE) return false;
+    try {
+      const canvas = $("map-3d-canvas");
+      const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      renderer.setClearColor(0xe8ecdf, 0);
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0xe8ecdf, 50, 180);
+      const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 600);
+      camera.position.set(18, 20, 24);
+      const controls = new THREE.OrbitControls(camera, canvas);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.screenSpacePanning = true;
+      controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: -1 };
+      controls.minDistance = 6;
+      controls.maxDistance = 220;
+      controls.maxPolarAngle = Math.PI * 0.48;
+      controls.target.set(0, 2, 0);
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 0.65));
+      const key = new THREE.DirectionalLight(0xfff4d6, 0.9);
+      key.position.set(20, 35, 16);
+      scene.add(key);
+      const rim = new THREE.DirectionalLight(0xb8d5ff, 0.6);
+      rim.position.set(-25, 12, -20);
+      scene.add(rim);
+      const group = new THREE.Group();
+      scene.add(group);
+      map3dThree.renderer = renderer;
+      map3dThree.scene = scene;
+      map3dThree.camera = camera;
+      map3dThree.controls = controls;
+      map3dThree.group = group;
+      map3dThree.center = new THREE.Vector3(0, 0, 0);
+      map3dThree.ready = true;
+      return true;
+    } catch (e) {
+      map3dThree.ready = false;
+      return false;
+    }
+  }
+
+  function map3dThreeResize() {
+    if (!map3dThree.ready) return;
+    const canvas = $("map-3d-canvas");
+    const width = Math.max(320, canvas.clientWidth);
+    const height = Math.max(260, canvas.clientHeight);
+    map3dThree.renderer.setSize(width, height, false);
+    map3dThree.camera.aspect = width / height;
+    map3dThree.camera.updateProjectionMatrix();
+  }
+
+  function map3dContainerColor(type) {
+    const value = String(type || "");
+    if (value.includes("barrel")) return { body: 0x8a5c31, lid: 0x9d6d3b, trim: 0x3f2a16 };
+    if (value.includes("shulker")) return { body: 0x8b63b0, lid: 0xa77bc8, trim: 0x5b3f76 };
+    if (value.includes("furnace") || value.includes("smoker")) return { body: 0x777777, lid: 0x8e8e8e, trim: 0x3c3c3c };
+    if (value.includes("hopper") || value.includes("dispenser") || value.includes("dropper")) return { body: 0x5f6467, lid: 0x777d80, trim: 0x2f3335 };
+    return { body: 0x8b5a2b, lid: 0x9e6935, trim: 0x382515 };
+  }
+
+  const map3dChestTextures = new Map();
+  function map3dChestTexture(name, repeatX) {
+    const repeat = Math.max(1, Number(repeatX || 1));
+    const key = name + ":" + repeat;
+    if (map3dChestTextures.has(key)) return map3dChestTextures.get(key);
+    let texture = map3dChestTextures.get(name);
+    if (!texture) {
+      texture = new THREE.TextureLoader().load("textures/custom/" + name);
+      texture.magFilter = THREE.NearestFilter;
+      texture.minFilter = THREE.NearestFilter;
+      texture.generateMipmaps = false;
+      if ("encoding" in texture) texture.encoding = THREE.sRGBEncoding;
+      map3dChestTextures.set(name, texture);
+    }
+    if (repeat > 1) {
+      texture = texture.clone();
+      texture.needsUpdate = true;
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(repeat, 1);
+    }
+    map3dChestTextures.set(key, texture);
+    return texture;
+  }
+
+  function mapContainerTypeLabel(type) {
+    const value = String(type || "").toLowerCase();
+    if (value.indexOf("shulker") >= 0) return "潜影盒";
+    if (value.indexOf("hopper") >= 0) return "漏斗";
+    if (value.indexOf("dispenser") >= 0) return "发射器";
+    if (value.indexOf("dropper") >= 0) return "投掷器";
+    if (value.indexOf("barrel") >= 0) return "木桶";
+    if (value.indexOf("chest") >= 0) return "箱子";
+    return "容器";
+  }
+
+  function map3dApplyFacing(group, facing) {
+    const value = String(facing || "south").toLowerCase();
+    if (value === "down") group.rotation.x = Math.PI / 2;
+    else if (value === "up") group.rotation.x = -Math.PI / 2;
+    else group.rotation.y = value === "north" ? Math.PI : (value === "east" ? Math.PI / 2 : (value === "west" ? -Math.PI / 2 : 0));
+  }
+
+  function map3dCreateContainer(item, x, y, z, removed, layerIndex) {
+    const group = new THREE.Group();
+    const type = String(item.type || "").toLowerCase();
+    const mat = (texture, color, roughness, metalness) => new THREE.MeshStandardMaterial({
+      map: texture || null,
+      color: color == null ? 0xffffff : color,
+      roughness: roughness == null ? 0.82 : roughness,
+      metalness: metalness == null ? 0.02 : metalness,
+      transparent: removed,
+      opacity: removed ? 0.55 : 1
+    });
+    const addBox = (w, h, d, px, py, pz, materials, register, parent) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials);
+      mesh.position.set(px, py, pz);
+      mesh.userData.id = item.id;
+      mesh.userData.layer = layerIndex;
+      (parent || group).add(mesh);
+      if (register !== false) map3dThree.boxes.push(mesh);
+      return mesh;
+    };
+    const facing = String(item.facing || "south").toLowerCase();
+    if (type.indexOf("shulker") >= 0) {
+      const colorKeys = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "light_gray", "gray", "silver", "cyan", "purple", "blue", "brown", "green", "red", "black", "undyed"];
+      let colorKey = "purple";
+      for (const key of colorKeys) {
+        if (type.indexOf(key + "_shulker") >= 0 || type.indexOf(key + "_box") >= 0) colorKey = key;
+      }
+      const shulkerTex = map3dChestTexture("shulker_" + colorKey + ".png");
+      const shulkerMats = [mat(shulkerTex), mat(shulkerTex), mat(shulkerTex), mat(shulkerTex), mat(shulkerTex), mat(shulkerTex)];
+      addBox(0.94, 1.0, 0.94, 0, 0.5, 0, shulkerMats);
+    } else if (type.indexOf("hopper") >= 0) {
+      const side = map3dChestTexture("hopper_side_real.png");
+      const inside = map3dChestTexture("hopper_inside_real.png");
+      const sideMat = mat(side, 0xffffff, 0.62, 0.35);
+      const insideMat = mat(inside, 0xffffff, 0.62, 0.35);
+      addBox(0.98, 0.22, 0.98, 0, 0.89, 0, [sideMat, sideMat, insideMat, insideMat, sideMat, sideMat]);
+      addBox(0.96, 0.04, 0.96, 0, 0.79, 0, insideMat, false);
+      addBox(0.74, 0.36, 0.74, 0, 0.60, 0, sideMat);
+      const spout = new THREE.Group();
+      spout.position.set(0, 0.30, 0);
+      addBox(0.46, 0.22, 0.46, 0, 0.01, 0, sideMat, true, spout);
+      addBox(0.24, 0.20, 0.24, 0, -0.20, 0, sideMat, true, spout);
+      if (facing === "up") spout.rotation.x = Math.PI;
+      else if (facing === "north") spout.rotation.x = Math.PI / 2;
+      else if (facing === "south") spout.rotation.x = -Math.PI / 2;
+      else if (facing === "east") spout.rotation.z = -Math.PI / 2;
+      else if (facing === "west") spout.rotation.z = Math.PI / 2;
+      group.add(spout);
+    } else if (type.indexOf("dispenser") >= 0 || type.indexOf("dropper") >= 0) {
+      const dispenser = type.indexOf("dispenser") >= 0;
+      const vertical = facing === "up" || facing === "down";
+      const side = map3dChestTexture("machine_side_real.png");
+      const top = map3dChestTexture("machine_top_real.png");
+      const front = map3dChestTexture(dispenser
+        ? (vertical ? "dispenser_front_vertical_real.png" : "dispenser_front_real.png")
+        : (vertical ? "dropper_front_vertical_real.png" : "dropper_front_real.png"));
+      const sideMat = mat(side);
+      const frontMat = mat(front);
+      const topMat = mat(top);
+      const addPlane = (px, py, pz, rx, ry, material) => {
+        const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.98, 0.98), material);
+        plane.position.set(px, py, pz);
+        plane.rotation.set(rx, ry, 0);
+        plane.userData.id = item.id;
+        plane.userData.layer = layerIndex;
+        group.add(plane);
+        map3dThree.boxes.push(plane);
+      };
+      addPlane(0, 0.49, 0.49, 0, 0, frontMat);
+      addPlane(0, 0.49, -0.49, 0, Math.PI, sideMat);
+      addPlane(0.49, 0.49, 0, 0, Math.PI / 2, sideMat);
+      addPlane(-0.49, 0.49, 0, 0, -Math.PI / 2, sideMat);
+      addPlane(0, 0.98, 0, -Math.PI / 2, 0, topMat);
+      addPlane(0, 0, 0, Math.PI / 2, 0, sideMat);
+      map3dApplyFacing(group, facing);
+    } else if (type.indexOf("barrel") >= 0) {
+      const side = map3dChestTexture("barrel_side_real.png");
+      const top = map3dChestTexture("barrel_top_real.png");
+      addBox(0.94, 0.90, 0.94, 0, 0.45, 0, [mat(side), mat(side), mat(top), mat(top), mat(side), mat(side)]);
+      addBox(0.98, 0.10, 0.98, 0, 0.95, 0, [mat(side), mat(side), mat(top), mat(top), mat(side), mat(side)]);
+      const band = mat(null, 0x4a4a4a, 0.45, 0.45);
+      addBox(0.99, 0.035, 0.99, 0, 0.24, 0, band, false);
+      addBox(0.99, 0.035, 0.99, 0, 0.72, 0, band, false);
+      if (facing === "down") group.rotation.x = Math.PI;
+      else if (facing === "north") group.rotation.x = -Math.PI / 2;
+      else if (facing === "south") group.rotation.x = Math.PI / 2;
+      else if (facing === "east") group.rotation.z = -Math.PI / 2;
+      else if (facing === "west") group.rotation.z = Math.PI / 2;
+    } else {
+      const large = Number(item.size || 0) > 27;
+      const front = map3dChestTexture(large ? "chest_front_large_v2.png" : "chest_front_small_v2.png");
+      const side = map3dChestTexture("chest_side_v2.png");
+      const top = map3dChestTexture("chest_top_v2.png");
+      const lid = map3dChestTexture("chest_lid_v2.png");
+      const bodyMats = [mat(side), mat(side), mat(top), mat(top), mat(front), mat(side)];
+      const lidMats = [mat(side), mat(side), mat(top), mat(top), mat(lid), mat(side)];
+      const bodyW = large ? 1.98 : 0.98;
+      addBox(bodyW, 0.72, 0.98, 0, 0.36, 0, bodyMats);
+      addBox(bodyW, 0.28, 0.98, 0, 0.86, 0, lidMats);
+      const latchFront = map3dChestTexture("chest_latch_v2.png");
+      const latchSide = mat(null, 0x8a8a8a, 0.48, 0.22);
+      const latchFaceMat = mat(latchFront, 0xffffff, 0.42, 0.22);
+      const latchMats = [latchSide, latchSide, latchSide, latchSide, latchFaceMat, latchSide];
+      addBox(large ? 0.34 : 0.18, 0.12, 0.06, 0, 0.72, 0.52, latchMats, false);
+      map3dApplyFacing(group, facing);
+    }
+    group.position.set(x, y, z);
+    return group;
+  }
+
+  function map3dThreeFitGroup() {
+    if (!map3dThree.ready) return;
+    const box = new THREE.Box3().setFromObject(map3dThree.group);
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const radius = Math.max(7, Math.max(size.x, size.y, size.z) * 1.15);
+    map3dThree.radius = radius;
+    map3dThree.center = center;
+    map3dThreeOrientCamera();
+  }
+
+  function map3dThreeOrientCamera() {
+    if (!map3dThree.ready || !state.map.three) return;
+    const items = state.map.three.items || [];
+    const counts = { north: 0, south: 0, east: 0, west: 0 };
+    for (const item of items) {
+      const facing = String(item.facing || "south").toLowerCase();
+      if (counts[facing] != null) counts[facing] += 1;
+    }
+    const facing = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || "south";
+    const radius = Math.max(7, map3dThree.radius || 10);
+    const center = map3dThree.center || new THREE.Vector3();
+    const target = new THREE.Vector3(center.x, Number(center.y || 0), center.z);
+    map3dThree.controls.target.copy(target);
+    const lift = radius * 1.05;
+    const side = radius * 1.05;
+    const back = radius * 1.55;
+    if (facing === "north") map3dThree.camera.position.set(target.x - side, target.y + lift, target.z - back);
+    else if (facing === "east") map3dThree.camera.position.set(target.x + back, target.y + lift, target.z + side);
+    else if (facing === "west") map3dThree.camera.position.set(target.x - back, target.y + lift, target.z - side);
+    else map3dThree.camera.position.set(target.x + side, target.y + lift, target.z + back);
+    map3dThree.controls.update();
+  }
+
+  function map3dThreeFocus(index) {
+    if (!map3dThree.ready) return;
+    const three = state.map.three;
+    if (!three) return;
+    const layer = three.layers[index] || three.layers[0];
+    const y = Number(layer.avgY != null ? layer.avgY : layer.minY || 0) - Number(map3dThree.worldMinY || 0) + 0.5;
+    map3dThree.controls.target.set(0, y, 0);
+    const radius = Math.max(6, map3dThree.radius);
+    map3dThree.camera.position.set(radius * 1.35, y + radius * 0.55, radius * 1.6);
+    map3dThree.controls.update();
+  }
+
+  function map3dThreeBuild() {
+    if (!map3dThree.ready || !state.map.three) return;
+    const three = state.map.three;
+    const group = map3dThree.group;
+    while (group.children.length) {
+      const child = group.children.pop();
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) child.material.forEach((m) => m.dispose());
+        else child.material.dispose();
+      }
+    }
+    map3dThree.boxes = [];
+    const layers = three.layers;
+    const layer = layers[three.active] || layers[0];
+    if (!layer || !layer.items.length) {
+      map3dThree.containers = [];
+      map3dThree.boxes = [];
+      map3dSetContainerDim("");
+      return;
+    }
+    three.active = layer.index;
+    const all = layer.items;
+    const centerX = (Math.min(...all.map((x) => Number(x.x || 0))) + Math.max(...all.map((x) => Number(x.x || 0)))) / 2;
+    const centerZ = (Math.min(...all.map((x) => Number(x.z || 0))) + Math.max(...all.map((x) => Number(x.z || 0)))) / 2;
+    const span = Math.max(8, Math.max(...all.map((x) => Number(x.x || 0))) - Math.min(...all.map((x) => Number(x.x || 0))), Math.max(...all.map((x) => Number(x.z || 0))) - Math.min(...all.map((x) => Number(x.z || 0))));
+    const minWorldY = Math.min(...all.map((x) => Number(x.y || 0)));
+    const maxWorldY = Math.max(...all.map((x) => Number(x.y || 0)));
+    map3dThree.worldMinY = minWorldY;
+    map3dThree.center.set(centerX, (minWorldY + maxWorldY) / 2, centerZ);
+    map3dThree.radius = Math.max(8, span * 0.9, (maxWorldY - minWorldY) * 1.2 + 2);
+    map3dThree.containers = [];
+    for (const item of layer.items) {
+      const large = Number(item.size || 0) > 27;
+      const pairX = Number(item.pairX);
+      const pairZ = Number(item.pairZ);
+      const hasPair = large && Number.isFinite(pairX) && Number.isFinite(pairZ);
+      const pairAxisX = hasPair && pairX !== Number(item.x);
+      const axisZ = hasPair ? !pairAxisX : (large && String(item.doubleAxis || "") === "z");
+      const x = (hasPair
+        ? (pairAxisX ? (Number(item.x) + pairX + 1) / 2 : Number(item.x) + 0.5)
+        : Number(item.x || 0) + (large ? (axisZ ? 0.5 : 1.0) : 0.5)) - centerX;
+      const z = (hasPair
+        ? (pairAxisX ? Number(item.z) + 0.5 : (Number(item.z) + pairZ + 1) / 2)
+        : Number(item.z || 0) + (large ? (axisZ ? 1.0 : 0.5) : 0.5)) - centerZ;
+      const y = Number(item.y || 0) - minWorldY;
+      const container = map3dCreateContainer(item, x, y, z, item.state === "removed", layer.index);
+      container.userData.item = item;
+      container.userData.id = item.id;
+      container.userData.baseX = x;
+      container.userData.baseY = y;
+      container.userData.baseZ = z;
+      container.userData.targetX = x * map3dThree.explodeH;
+      container.userData.targetY = y * map3dThree.explodeV;
+      container.userData.targetZ = z * map3dThree.explodeH;
+      group.add(container);
+      map3dThree.containers.push(container);
+    }
+    map3dThree.explode = 0;
+    map3dThree.explodeTarget = 0;
+    map3dSetExplodeLabel();
+    map3dSyncExplodeSliders();
+    map3dThreeResize();
+    map3dThreeFitGroup();
+    map3dSetContainerDim("");
+  }
+
+  function map3dSetExplodeLabel() {
+    const button = $("map-3d-explode");
+    if (!button) return;
+    button.textContent = map3dThree.explodeTarget ? "恢复位置" : "展开遮挡";
+  }
+
+  function map3dSyncExplodeSliders() {
+    const h = $("map-3d-explode-h");
+    const v = $("map-3d-explode-v");
+    if (h) h.value = String(map3dThree.explodeH);
+    if (v) v.value = String(map3dThree.explodeV);
+    if ($("map-3d-explode-h-value")) $("map-3d-explode-h-value").textContent = map3dThree.explodeH.toFixed(1) + "×";
+    if ($("map-3d-explode-v-value")) $("map-3d-explode-v-value").textContent = map3dThree.explodeV.toFixed(1) + "×";
+  }
+
+  function map3dUpdateExplodeAxis(axis, value) {
+    const number = Math.max(1, Math.min(3, Number(value) || 1));
+    if (axis === "h") map3dThree.explodeH = number;
+    else map3dThree.explodeV = number;
+    for (const container of map3dThree.containers) {
+      container.userData.targetX = container.userData.baseX * map3dThree.explodeH;
+      container.userData.targetY = container.userData.baseY * map3dThree.explodeV;
+      container.userData.targetZ = container.userData.baseZ * map3dThree.explodeH;
+    }
+    if (!map3dThree.explodeTarget) map3dThree.explodeTarget = 1;
+    map3dSyncExplodeSliders();
+    map3dSetExplodeLabel();
+  }
+
+  function map3dToggleExplode() {
+    map3dThree.explodeTarget = map3dThree.explodeTarget ? 0 : 1;
+    map3dSetExplodeLabel();
+  }
+
+  function map3dSetContainerDim(id) {
+    if (!map3dThree.ready) return;
+    const selected = String(id || "");
+    map3dThree.selectedId = selected;
+    for (const container of map3dThree.containers) {
+      const active = selected && String(container.userData.id || "") === selected;
+      container.traverse((object) => {
+        if (!object.isMesh || !object.material) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        object.renderOrder = selected && active ? 1000 : 0;
+        for (const material of materials) {
+          if (!material) continue;
+          material.transparent = true;
+          material.opacity = selected ? (active ? 1 : 0.3) : 1;
+          material.depthWrite = !selected || active;
+          material.depthTest = !selected || active;
+          material.needsUpdate = true;
+        }
+      });
+    }
+    map3dThree.listSignature = "";
+    map3dRefreshContainerList(true);
+  }
+
+  function map3dRefreshContainerList(force) {
+    if (!map3dThree.ready) return;
+    const host = $("map-3d-list-items");
+    if (!host) return;
+    const now = performance.now();
+    if (!force && now - map3dThree.lastListAt < 250) return;
+    map3dThree.lastListAt = now;
+    const camera = map3dThree.camera;
+    if (!camera) return;
+    camera.updateMatrixWorld();
+    const frustum = new THREE.Frustum();
+    frustum.setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    const visible = [];
+    for (const container of map3dThree.containers) {
+      const item = container.userData.item || {};
+      const radius = Math.max(1.7, (Number(item.size || 0) > 27 ? 2.1 : 1.3));
+      const center = container.getWorldPosition(new THREE.Vector3());
+      if (frustum.intersectsSphere(new THREE.Sphere(center, radius))) visible.push(container);
+    }
+    visible.sort((a, b) => {
+      const ia = a.userData.item || {}, ib = b.userData.item || {};
+      return Number(ib.y || 0) - Number(ia.y || 0) || Number(ia.z || 0) - Number(ib.z || 0) || Number(ia.x || 0) - Number(ib.x || 0);
+    });
+    const signature = visible.map((c) => c.userData.id).join("|") + "#" + map3dThree.selectedId;
+    if (!force && signature === map3dThree.listSignature) return;
+    map3dThree.listSignature = signature;
+    if (!visible.length) {
+      host.innerHTML = '<div class="ench-empty">当前视图没有容器。</div>';
+      return;
+    }
+    host.innerHTML = visible.map((container) => {
+      const item = container.userData.item || {};
+      const active = map3dThree.selectedId && String(container.userData.id) === map3dThree.selectedId;
+      return '<button type="button" class="map-3d-list-item' + (active ? ' active' : '') + '" data-map-container-id="' + esc(String(item.id || "")) + '">' +
+        '<b>' + esc(mapContainerTypeLabel(item.type)) + '</b>' +
+        '<span>' + esc(Number(item.x || 0) + ',' + Number(item.y || 0) + ',' + Number(item.z || 0)) + '</span>' +
+        '<small>' + Number(item.size || 0) + ' 格 · ' + esc(String(item.facing || "-")) + ' · ' + Number(item.itemCount || 0) + ' 件</small>' +
+        '</button>';
+    }).join("");
+  }
+
+  function map3dThreeAnimate() {
+    if (!map3dThree.ready) return;
+    map3dThree.raf = requestAnimationFrame(map3dThreeAnimate);
+    if ($("map-3d").classList.contains("hidden")) return;
+    map3dThreeResize();
+    const target = map3dThree.explodeTarget ? 1 : 0;
+    map3dThree.explode += (target - map3dThree.explode) * 0.12;
+    if (Math.abs(target - map3dThree.explode) < 0.001) map3dThree.explode = target;
+    const ease = map3dThree.explode * map3dThree.explode * (3 - 2 * map3dThree.explode);
+    for (const container of map3dThree.containers) {
+      container.position.x = container.userData.baseX + (container.userData.targetX - container.userData.baseX) * ease;
+      container.position.y = container.userData.baseY + (container.userData.targetY - container.userData.baseY) * ease;
+      container.position.z = container.userData.baseZ + (container.userData.targetZ - container.userData.baseZ) * ease;
+    }
+    map3dThree.controls.update();
+    map3dRefreshContainerList(false);
+    map3dThree.renderer.render(map3dThree.scene, map3dThree.camera);
+  }
+
+
+  function map3dImage(type) {
+    const key = String(type || "");
+    if (map3dImageCache.has(key)) return map3dImageCache.get(key);
+    const image = new Image();
+    image.onload = () => map3dDraw();
+    image.src = icon(key);
+    map3dImageCache.set(key, image);
+    return image;
+  }
+
+  function openMap3D(items) {
+    const list = (items || []).filter(Boolean);
+    if (!list.length) return;
+    const layers = map3dBuildLayers(list);
+    state.map.three = { items: list, layers: layers, active: 0, boxes: [], zoom: 1, ox: 0, oy: 0, dragging: false, moved: false };
+    $("map-3d-title").textContent = "容器分层视图 · " + list.length + " 个容器 / " + layers.length + " 层";
+    $("map-3d").classList.remove("hidden");
+    map3dRenderLayerBar();
+    if (map3dInitThree()) {
+      map3dThreeBuild();
+      if (!map3dThree.raf) map3dThreeAnimate();
+    } else {
+      map3dDraw();
+    }
+  }
+
+  function map3dRenderLayerBar() {
+    const three = state.map.three;
+    const host = $("map-3d-layerbar");
+    if (!three || !host) return;
+    host.innerHTML = three.layers.map((layer) => `
+      <button type="button" class="map-3d-layer${layer.index === three.active ? " active" : ""}" data-map-layer="${layer.index}">
+        <b>Y ${layer.minY} – ${layer.maxY}</b><span>区块 ${layer.chunkX},${layer.chunkZ} · ${layer.items.length} 个${layer.truncated ? " / 已截断" : ""}</span>
+      </button>`).join("");
+    host.querySelectorAll("[data-map-layer]").forEach((button) => {
+      button.addEventListener("click", () => {
+        three.active = Number(button.dataset.mapLayer);
+        three.ox = 0;
+        three.oy = 0;
+        map3dRenderLayerBar();
+        if (map3dThree.ready) {
+          map3dThreeBuild();
+          map3dThreeFocus(three.active);
+        } else map3dDraw();
+      });
+    });
+  }
+
+  function map3dDraw() {
+    if (map3dThree.ready) return;
+    const canvas = $("map-3d-canvas");
+    const three = state.map.three;
+    if (!canvas || !three || !three.layers.length) return;
+    const width = Math.max(320, canvas.clientWidth);
+    const height = Math.max(260, canvas.clientHeight);
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    const sky = ctx.createLinearGradient(0, 0, 0, height);
+    sky.addColorStop(0, "#f7f7f0");
+    sky.addColorStop(0.62, "#e8ecdf");
+    sky.addColorStop(1, "#d8ddce");
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, width, height);
+
+    const layer = three.layers[three.active] || three.layers[0];
+    const centerX = width / 2 + three.ox;
+    const baseY = height * 0.64 + three.oy;
+    three.boxes = [];
+    for (const delta of [-1, 1]) {
+      const neighbor = three.layers[three.active + delta];
+      if (!neighbor) continue;
+      const ny = baseY + delta * 118;
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = "rgba(91,107,72,.14)";
+      ctx.strokeStyle = "rgba(60,73,47,.3)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(centerX, ny - 72);
+      ctx.lineTo(centerX + 180, ny - 22);
+      ctx.lineTo(centerX, ny + 32);
+      ctx.lineTo(centerX - 180, ny - 22);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "rgba(14,14,14,.55)";
+      ctx.font = "9px 'Space Grotesk', Consolas, monospace";
+      ctx.fillText("层 " + (neighbor.index + 1) + " · " + neighbor.items.length + " 个", centerX - 24, ny + 3);
+      ctx.globalAlpha = 1;
+    }
+    const spanX = Math.max(6, layer.maxX - layer.minX);
+    const spanZ = Math.max(6, layer.maxZ - layer.minZ);
+    const span = Math.max(spanX, spanZ);
+    const baseScale = Math.min(width / (span * 2.9), height / (span * 1.95)) * three.zoom;
+    const k = Math.max(16, Math.min(58, baseScale));
+    const iso = (x, z) => ({ x: centerX + (x - (layer.minX + layer.maxX) / 2) * k - (z - (layer.minZ + layer.maxZ) / 2) * k * 0.55, y: baseY + (z - (layer.minZ + layer.maxZ) / 2) * k * 0.4 + (x - (layer.minX + layer.maxX) / 2) * k * 0.16 });
+    three.boxes = [];
+
+    const pad = 1.6;
+    const x0 = layer.minX - pad;
+    const x1 = layer.maxX + pad;
+    const z0 = layer.minZ - pad;
+    const z1 = layer.maxZ + pad;
+    const p00 = iso(x0, z0);
+    const p10 = iso(x1, z0);
+    const p11 = iso(x1, z1);
+    const p01 = iso(x0, z1);
+    ctx.fillStyle = "rgba(91,107,72,.18)";
+    ctx.strokeStyle = "rgba(60,73,47,.45)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(p00.x, p00.y);
+    ctx.lineTo(p10.x, p10.y);
+    ctx.lineTo(p11.x, p11.y);
+    ctx.lineTo(p01.x, p01.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.save();
+    ctx.clip();
+    ctx.strokeStyle = "rgba(60,73,47,.12)";
+    ctx.lineWidth = 1;
+    for (let gx = Math.floor(x0); gx <= Math.ceil(x1); gx++) {
+      const a = iso(gx, z0);
+      const b = iso(gx, z1);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    for (let gz = Math.floor(z0); gz <= Math.ceil(z1); gz++) {
+      const a = iso(x0, gz);
+      const b = iso(x1, gz);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.fillStyle = "#0e0e0e";
+    ctx.font = "bold 11px 'Space Grotesk', Consolas, monospace";
+    ctx.fillText("层 " + (layer.index + 1) + " / " + three.layers.length, 16, 24);
+    ctx.font = "10px 'Space Grotesk', Consolas, monospace";
+    ctx.fillStyle = "rgba(14,14,14,.62)";
+    ctx.fillText("Y " + layer.minY + (layer.maxY !== layer.minY ? "–" + layer.maxY : "") + " · " + layer.items.length + " 个容器 · 间距 > 3 格自动分层", 16, 40);
+
+    const sorted = layer.items.slice().sort((a, b) => (a.x + a.z) - (b.x + b.z) || a.y - b.y);
+    for (const item of sorted) {
+      const p = iso(Number(item.x || 0), Number(item.z || 0));
+      const level = (Number(item.y || 0) - layer.minY) * 5;
+      const px = p.x;
+      const py = p.y - level;
+      const s = Math.max(12, Math.min(26, k * 0.52));
+      ctx.fillStyle = "rgba(30,34,24,.13)";
+      ctx.beginPath();
+      ctx.ellipse(px, py + s * 1.1, s * 1.05, s * 0.36, 0, 0, Math.PI * 2);
+      ctx.fill();
+      const removed = item.state === "removed";
+      ctx.strokeStyle = removed ? "rgba(224,47,120,.85)" : "#25291d";
+      ctx.lineWidth = 1.5;
+      ctx.fillStyle = removed ? "rgba(255,26,172,.22)" : "#d8c17a";
+      ctx.beginPath();
+      ctx.moveTo(px, py - s * 1.0);
+      ctx.lineTo(px + s, py - s * 0.48);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px - s, py - s * 0.48);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      const front = ctx.createLinearGradient(px, py, px, py + s * 1.1);
+      front.addColorStop(0, removed ? "rgba(255,26,172,.28)" : "#b59a56");
+      front.addColorStop(1, removed ? "rgba(255,26,172,.14)" : "#8f783e");
+      ctx.fillStyle = front;
+      ctx.beginPath();
+      ctx.moveTo(px - s, py - s * 0.48);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px, py + s * 1.12);
+      ctx.lineTo(px - s, py + s * 0.62);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = removed ? "rgba(255,26,172,.2)" : "#c9b46b";
+      ctx.beginPath();
+      ctx.moveTo(px + s, py - s * 0.48);
+      ctx.lineTo(px, py);
+      ctx.lineTo(px, py + s * 1.12);
+      ctx.lineTo(px + s, py + s * 0.62);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      const image = map3dImage(item.type);
+      if (image.complete && image.naturalWidth) {
+        const imageSize = Math.max(18, s * 1.3);
+        ctx.drawImage(image, px - imageSize / 2, py - s * 0.48 - imageSize / 2, imageSize, imageSize);
+      }
+      ctx.fillStyle = "#0e0e0e";
+      ctx.font = "9px 'Space Grotesk', Consolas, monospace";
+      ctx.fillText(String(item.itemCount || 0) + "件", px - s * 0.35, py + s * 1.36);
+      three.boxes.push({ x: px - s, y: py - s, w: s * 2, h: s * 2.2, id: item.id });
+    }
+    ctx.fillStyle = "rgba(14,14,14,.55)";
+    ctx.font = "10px 'Space Grotesk', Consolas, monospace";
+    ctx.fillText("拖动平移 · 滚轮缩放 · 点击容器查看内容", 16, height - 14);
+  }
+
+  function mapBindInteractions() {
+    const canvas = $("map-canvas");
+    const stage = $("map-stage");
+    if (!canvas || !stage) return;
+    canvas.addEventListener("mousedown", (event) => {
+      state.map.dragging = true;
+      state.map.dragStart = { x: event.clientX, y: event.clientY, cx: state.map.center.x, cz: state.map.center.z };
+      stage.classList.add("dragging");
+    });
+    window.addEventListener("mousemove", (event) => {
+      if (!state.map.dragging || !state.map.dragStart) return;
+      state.map.center.x = state.map.dragStart.cx - (event.clientX - state.map.dragStart.x) / state.map.scale;
+      state.map.center.z = state.map.dragStart.cz - (event.clientY - state.map.dragStart.y) / state.map.scale;
+      mapDraw();
+    });
+    window.addEventListener("mouseup", () => {
+      state.map.dragging = false;
+      stage.classList.remove("dragging");
+      if (state.view === "map" && state.map.meta) mapScheduleReload();
+    });
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      state.map.scale = Math.max(0.015, Math.min(2, state.map.scale * (event.deltaY < 0 ? 1.18 : 0.84)));
+      mapDraw();
+      mapScheduleReload();
+    }, { passive: false });
+    $("map-zoom-in").addEventListener("click", () => {
+      state.map.scale = Math.min(2, state.map.scale * 1.3);
+      mapDraw();
+      mapScheduleReload();
+    });
+    $("map-zoom-out").addEventListener("click", () => {
+      state.map.scale = Math.max(0.015, state.map.scale / 1.3);
+      mapDraw();
+      mapScheduleReload();
+    });
+    $("map-apply").addEventListener("click", () => {
+      state.map.mode = $("map-mode").value === "history" ? "history" : "live";
+      state.map.dim = Number($("map-dim").value || 0);
+      state.map.initialized = false;
+      loadMap();
+    });
+    $("map-live").addEventListener("click", () => {
+      state.map.mode = "live";
+      $("map-mode").value = "live";
+      state.map.initialized = false;
+      loadMap();
+    });
+    $("map-mode").addEventListener("change", () => {
+      state.map.mode = $("map-mode").value === "history" ? "history" : "live";
+      state.map.initialized = false;
+      loadMap();
+    });
+    $("map-dim").addEventListener("change", () => {
+      state.map.dim = Number($("map-dim").value || 0);
+      state.map.initialized = false;
+      loadMap();
+    });
+    $("map-crosshair").addEventListener("change", () => mapDraw());
+    $("map-detail-close").addEventListener("click", () => $("map-container-modal").classList.add("hidden"));
+    $("map-container-modal").addEventListener("click", (event) => {
+      if (event.target === $("map-container-modal")) $("map-container-modal").classList.add("hidden");
+    });
+    $("map-3d-close").addEventListener("click", () => {
+      $("map-3d").classList.add("hidden");
+      if (map3dThree.ready) map3dSetContainerDim("");
+      state.map.three = null;
+    });
+    $("map-3d-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-map-container-id]");
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      map3dSetContainerDim(button.dataset.mapContainerId);
+    });
+    $("map-3d-clear").addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      map3dSetContainerDim("");
+    });
+    $("map-3d-explode").addEventListener("click", () => map3dToggleExplode());
+    $("map-3d-explode-h").addEventListener("input", (event) => map3dUpdateExplodeAxis("h", event.target.value));
+    $("map-3d-explode-v").addEventListener("input", (event) => map3dUpdateExplodeAxis("v", event.target.value));
+    $("map-3d-canvas").addEventListener("mousedown", (event) => {
+      if (event.button === 2 || event.button === 3 || event.button === 4) event.preventDefault();
+      const three = state.map.three;
+      if (!three) return;
+      three.moved = false;
+      if (map3dThree.ready) {
+        map3dThree.pointer = { x: event.clientX, y: event.clientY };
+        return;
+      }
+      three.dragging = true;
+      three.dragStart = { x: event.clientX, y: event.clientY, ox: three.ox, oy: three.oy };
+      $("map-3d-canvas").classList.add("dragging");
+    });
+    window.addEventListener("mousemove", (event) => {
+      const three = state.map.three;
+      if (!three) return;
+      if (map3dThree.ready) {
+        if (map3dThree.pointer && Math.abs(event.clientX - map3dThree.pointer.x) + Math.abs(event.clientY - map3dThree.pointer.y) > 4) three.moved = true;
+        return;
+      }
+      if (!three.dragging || !three.dragStart) return;
+      const dx = event.clientX - three.dragStart.x;
+      const dy = event.clientY - three.dragStart.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) three.moved = true;
+      three.ox = three.dragStart.ox + dx;
+      three.oy = three.dragStart.oy + dy;
+      map3dDraw();
+    });
+    window.addEventListener("mouseup", () => {
+      const three = state.map.three;
+      if (!three) return;
+      three.dragging = false;
+      $("map-3d-canvas").classList.remove("dragging");
+    });
+    $("map-3d-canvas").addEventListener("pointerdown", (event) => {
+      if (event.button === 2 || event.button === 3 || event.button === 4) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
+    $("map-3d").addEventListener("contextmenu", (event) => event.preventDefault());
+    $("map-3d-canvas").addEventListener("contextmenu", (event) => event.preventDefault());
+    $("map-3d-canvas").addEventListener("auxclick", (event) => event.preventDefault());
+    $("map-3d-canvas").addEventListener("mouseup", (event) => {
+      if (event.button === 2 || event.button === 3 || event.button === 4) event.preventDefault();
+    });
+    $("map-3d-canvas").addEventListener("click", (event) => {
+      const three = state.map.three;
+      if (!three) return;
+      if (three.moved) { three.moved = false; return; }
+      if (map3dThree.ready) {
+        const rect = event.target.getBoundingClientRect();
+        const pointer = new THREE.Vector2(
+          ((event.clientX - rect.left) / rect.width) * 2 - 1,
+          -((event.clientY - rect.top) / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(pointer, map3dThree.camera);
+        const hits = raycaster.intersectObjects(map3dThree.boxes, false);
+        const selectedId = map3dThree.selectedId || "";
+        if (selectedId) {
+          const selectedHit = hits.find((hit) => String(hit.object.userData.id || "") === String(selectedId));
+          if (selectedHit) openMapContainer(selectedId);
+          return;
+        }
+        if (hits.length && hits[0].object.userData.id) openMapContainer(hits[0].object.userData.id);
+        return;
+      }
+      const rect = event.target.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const hit = three.boxes.slice().reverse().find((box) => x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h);
+      if (hit) openMapContainer(hit.id);
+    });
+    $("map-3d-canvas").addEventListener("wheel", (event) => {
+      event.preventDefault();
+      if (map3dThree.ready) return;
+      if (!state.map.three) return;
+      state.map.three.zoom = Math.max(0.4, Math.min(3, state.map.three.zoom * (event.deltaY < 0 ? 1.12 : 0.9)));
+      map3dDraw();
+    }, { passive: false });
+    window.addEventListener("resize", () => mapDraw());
+  }
+
   async function loadAudit() {
     try {
-      const list = await api("/audit?limit=200");
-      state.audit = Array.isArray(list) ? list : [];
-      renderAudit("all");
+      const [auditList, taskList] = await Promise.all([
+        api("/audit?limit=500"),
+        api("/tasks?limit=500")
+      ]);
+      state.audit = Array.isArray(auditList) ? auditList : [];
+      state.tasks = Array.isArray(taskList) ? taskList : [];
+      renderAudit(state.auditFilter);
       await verifyAudit(true);
     } catch (e) {
       if (!e.auth) toast("操作记录读取失败: " + e.message);
     }
   }
 
-  function renderAudit(filter) {
+  function taskStateName(task) {
+    return (task.state === "queued_offline" ? "queued" : task.state);
+  }
+
+  function taskStateLabel(stateName) {
+    return { succeeded: "成功", failed: "失败", queued: "排队", queued_offline: "离线排队", running: "执行中" }[stateName] || stateName;
+  }
+
+  function mergedAuditRows() {
+    const audit = (state.audit || []).map((row) => Object.assign({}, row, { kind: "audit" }));
+    const tasks = (state.tasks || []).map((task) => ({
+      kind: "task",
+      ts: Number(task.createdAt || task.startedAt || task.finishedAt || 0),
+      operator: task.operator && typeof task.operator === "object" ? (task.operator.name || task.operator.role || "system") : (task.operator || "system"),
+      action: task.actionId || "task",
+      target: String((task.input && (task.input.command || task.input.xuid || task.input.item)) || "-"),
+      state: taskStateName(task),
+      hash: task.taskId || "",
+      detail: task.error || (task.result && task.result.output ? String(task.result.output).slice(0, 160) : ""),
+      task: task
+    })).sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+    return audit.concat(tasks).sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+  }
+
+  function auditMatches(row, filter) {
     const mode = filter || "all";
-    const list = state.audit.filter((row) => {
-      if (mode === "all") return true;
-      if (mode === "command") return row.action === "command.execute";
-      if (mode === "restore") return row.action === "inventory.restore";
-      return row.action !== "command.execute" && row.action !== "inventory.restore";
-    });
-    $("audit-rows").innerHTML = list.map((row) => `
-      <div class="table-row">
+    if (mode === "tasks") return row.kind === "task";
+    if (mode === "command") return row.kind === "task" || row.action === "command.execute";
+    if (mode === "restore") return row.action === "inventory.restore";
+    if (mode === "inventory") return row.action !== "command.execute" && row.action !== "inventory.restore";
+    return true;
+  }
+
+  function renderAudit(filter) {
+    const mode = filter || state.auditFilter || "all";
+    state.auditFilter = mode;
+    const rows = mergedAuditRows().filter((row) => auditMatches(row, mode));
+    const pageSize = Math.max(1, Number(state.auditPageSize || 25));
+    const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+    state.auditPage = Math.max(1, Math.min(pages, Number(state.auditPage || 1)));
+    const start = (state.auditPage - 1) * pageSize;
+    const pageRows = rows.slice(start, start + pageSize);
+    $("audit-count").textContent = rows.length + " 条";
+    $("audit-rows").innerHTML = pageRows.map((row) => {
+      const isTask = row.kind === "task";
+      const stateName = isTask ? row.state : (row.state === "succeeded" ? "succeeded" : "failed");
+      const stateLabel = isTask ? taskStateLabel(stateName) : (row.state === "succeeded" ? "成功" : "失败");
+      const target = row.target || "-";
+      return `
+      <div class="table-row${isTask ? " audit-task-row" : ""}">
         <span class="mono">${fmtTime(row.ts)}</span>
         <span>${esc(row.operator || "-")}</span>
-        <span>${esc(ACTION_TITLE[row.action] || row.action)}</span>
-        <span>${esc(row.target || "-")}${row.detail ? `<small class="audit-detail">${esc(row.detail)}</small>` : ""}</span>
-        <span class="${row.state === "succeeded" ? "ok" : "warn"}">${row.state === "succeeded" ? "成功" : "失败"}</span>
-        <code>${esc(String(row.hash || "").slice(0, 16))}…</code>
-      </div>
-    `).join("") || '<div class="ench-empty">暂无操作记录。</div>';
+        <span>${esc(ACTION_TITLE[row.action] || row.action)}${isTask ? " · 任务" : ""}</span>
+        <span>${esc(target)}${row.detail ? `<small class="audit-detail">${esc(row.detail)}</small>` : ""}</span>
+        <span class="state-badge ${esc(stateName)}">${esc(stateLabel)}</span>
+        <code>${esc(String(row.hash || "").slice(0, 16))}${row.hash ? "…" : ""}</code>
+      </div>`;
+    }).join("") || '<div class="ench-empty">暂无操作记录。</div>';
+    $("audit-page-label").textContent = "第 " + state.auditPage + " / " + pages + " 页";
+    $("audit-prev").disabled = state.auditPage <= 1;
+    $("audit-next").disabled = state.auditPage >= pages;
   }
 
   async function verifyAudit(silent) {
@@ -1629,40 +3019,6 @@
     } catch (e) {
       toast("校验请求失败: " + e.message);
     }
-  }
-
-  async function loadTasks() {
-    try {
-      const list = await api("/tasks?limit=200");
-      state.tasks = Array.isArray(list) ? list : [];
-      renderTasks("all");
-    } catch (e) {
-      if (!e.auth) toast("任务数据读取失败: " + e.message);
-    }
-  }
-
-  function taskStateName(task) {
-    return (task.state === "queued_offline" ? "queued" : task.state);
-  }
-
-  function taskStateLabel(stateName) {
-    return { succeeded: "成功", failed: "失败", queued: "排队", queued_offline: "离线排队", running: "执行中" }[stateName] || stateName;
-  }
-
-  function renderTasks(filter) {
-    const list = state.tasks.filter((task) => filter === "all" || taskStateName(task) === filter);
-    $("task-count").textContent = list.length + " 项任务";
-    $("task-offline-count").textContent = String(state.tasks.filter((t) => taskStateName(t) === "queued").length).padStart(2, "0") + " 待执行";
-    $("task-rows").innerHTML = list.map((task) => {
-      const input = task.input || {};
-      return `<div class="task-item">
-        <div><div class="task-title">${esc(ACTION_TITLE[task.actionId] || task.actionId)}</div><div class="task-id">${esc(task.taskId)}</div></div>
-        <div class="task-target">${esc(input.xuid || input.command || "-")}</div>
-        <span class="state-badge ${esc(taskStateName(task))}">${taskStateLabel(task.state)}</span>
-        <div class="mono">${fmtTime(task.createdAt)}</div>
-        <div class="task-target">${esc(task.error || (task.result && JSON.stringify(task.result)) || "-")}</div>
-      </div>`;
-    }).join("") || '<div class="ench-empty">无匹配任务。</div>';
   }
 
   function snapshotReason(reason) {
@@ -1795,9 +3151,17 @@
       String(row.id || "").toLowerCase().includes(query));
     const allGroups = groupSnapshots(all);
     const groups = groupSnapshots(filtered);
+    const pageSize = Math.max(1, Number(state.snapshotPageSize || 6));
+    const pages = Math.max(1, Math.ceil(groups.length / pageSize));
+    state.snapshotPage = Math.max(1, Math.min(pages, Number(state.snapshotPage || 1)));
+    const start = (state.snapshotPage - 1) * pageSize;
+    const pageGroups = groups.slice(start, start + pageSize);
     $("snap-total").textContent = allGroups.length + " 个备份文件夹 / " + all.length + " 份";
     $("snapshot-count").textContent = groups.length + " / " + allGroups.length + " 个备份";
-    $("snapshot-global-list").innerHTML = groups.map((group) => {
+    $("snapshot-page-label").textContent = "第 " + state.snapshotPage + " / " + pages + " 页";
+    $("snapshot-prev").disabled = state.snapshotPage <= 1;
+    $("snapshot-next").disabled = state.snapshotPage >= pages;
+    $("snapshot-global-list").innerHTML = pageGroups.map((group) => {
       const open = state.expandedBatches.has(group.id);
       const players = group.players.slice().sort((a, b) => String(a.name || a.xuid).localeCompare(String(b.name || b.xuid), "zh-CN"));
       return `
@@ -1889,12 +3253,67 @@
     banner.classList.remove("hidden");
   }
 
+  async function loadAccounts() {
+    const card = $("account-list");
+    if (!card) return;
+    if (!state.owner) {
+      card.innerHTML = '<div class="ench-empty">只有初始管理员可以管理外放账号。</div>';
+      return;
+    }
+    try {
+      const list = await api("/accounts");
+      state.accounts = Array.isArray(list) ? list : [];
+      card.innerHTML = state.accounts.map((account) => `
+        <div class="account-row">
+          <b>${esc(account.username || "?")}</b>
+          <span>${esc({ admin: "管理员", operator: "操作员", viewer: "只读" }[account.role] || account.role || "只读")}</span>
+          <span class="state-badge ${account.owner ? "succeeded" : ""}">${account.owner ? "初始账号" : "外放"}</span>
+        </div>`).join("") || '<div class="ench-empty">还没有外放账号。</div>';
+    } catch (e) {
+      card.innerHTML = '<div class="ench-empty">' + esc(e.message) + "</div>";
+    }
+  }
+
+  async function createAccount(event) {
+    event.preventDefault();
+    if (!state.owner) return toast("只有初始管理员可以添加账号");
+    const username = $("account-username").value.trim();
+    const password = $("account-password").value;
+    const confirm = $("account-confirm").value;
+    const role = $("account-role").value;
+    if (!username || password.length < 10) return toast("用户名必填，密码至少 10 位");
+    if (password !== confirm) return toast("两次输入的密码不一致");
+    const button = $("account-add");
+    try {
+      button.disabled = true;
+      let body;
+      if (STANDALONE) {
+        body = { username: username, password: password, role: role };
+      } else {
+        const salt = randomSalt();
+        const iterations = 210000;
+        const verifier = await deriveVerifier(password, salt, iterations);
+        body = { username: username, salt: salt, iterations: iterations, verifier: verifier, role: role };
+      }
+      await api("/accounts", { method: "POST", body: body });
+      $("account-form").reset();
+      await loadAccounts();
+      toast("账号已添加");
+    } catch (e) {
+      toast("添加账号失败: " + e.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function renderSettings() {
     if (!state.meta) return;
     $("set-account").textContent = (state.meta && state.meta.user) || (cookieSession ? "管理员账号" : "未登录");
     $("set-storage").textContent = COOKIE_AUTH ? "JSON 文件" : "本地键值库";
     $("set-role").textContent = { admin: "管理员", operator: "操作员", viewer: "只读" }[state.role] || state.role;
     $("set-session").textContent = cookieSession ? "HttpOnly Cookie" : "Bearer Token";
+    if ($("account-owner-state")) $("account-owner-state").textContent = state.owner ? "初始管理员" : "只读";
+    if ($("account-form")) $("account-form").classList.toggle("hidden", !state.owner);
     $("set-nbt-inline").textContent = (state.meta.limits && state.meta.limits.nbtInlineKB || 64) + " KB";
     $("set-nbt-item").textContent = "512 KB";
     $("settings-modules").innerHTML = state.modules.map((module) => `
@@ -1957,14 +3376,15 @@
 
     if (view === "overview") await loadOverview();
     if (view === "flow") await loadFlow();
+    if (view === "map") await loadMap();
     if (view === "audit") await loadAudit();
-    if (view === "tasks") await loadTasks();
     if (view === "command") await loadCommandHistory();
     if (view === "last") await loadLastMoment();
     if (view === "snapshots") await loadGlobalSnapshots();
     if (view === "settings") {
       renderSettings();
       if (!state.modules.length) await loadModules();
+      await loadAccounts();
     }
     if (view === "players" && state.current && !state.inventory) await loadInventory(false);
   }
@@ -2018,7 +3438,7 @@
       if (task.state === "failed") $("command-output").textContent = "> /" + command + "\n[失败]\n" + (task.error || "未知错误");
       else if (task.state === "succeeded") $("command-output").textContent = "> /" + command + "\n[成功]\n" + JSON.stringify(task.result, null, 2);
       else $("command-output").textContent = "> /" + command + "\n[已排队] 服务器已停止，任务将在开服后执行。";
-      if (state.view === "tasks") loadTasks();
+      if (state.view === "audit") await loadAudit();
       await loadCommandHistory();
     } catch (e) {
       $("command-output").textContent = "> /" + command + "\n[失败]\n" + e.message;
@@ -2077,8 +3497,11 @@
         if (state.current) await loadInventory(false);
         if (state.view === "overview") await loadOverview();
         if (state.view === "flow") await loadFlow(false);
+        if (state.view === "map" && state.map.meta) {
+          await loadMapContainers();
+          await loadMapPlayers();
+        }
         if (state.view === "audit") await loadAudit();
-        if (state.view === "tasks") await loadTasks();
         if (state.view === "snapshots") await loadGlobalSnapshots();
         if (document.body.classList.contains("snapshot-open")) await loadSnapshots();
         if (state.view === "last") await loadLastMoment();
@@ -2239,6 +3662,13 @@
           state.authSalt = salt;
           state.authIterations = iterations;
         }
+        if (!setupRequired) {
+          const saltRes = await fetch("/api/v1/auth/salt?username=" + encodeURIComponent(username), { credentials: "same-origin", cache: "no-store" });
+          const saltBody = await saltRes.json();
+          if (!saltRes.ok || saltBody.ok === false) throw new Error(saltBody.error ? saltBody.error.message : "账号不存在");
+          salt = String(saltBody.data && saltBody.data.salt || salt);
+          iterations = Number(saltBody.data && saltBody.data.iterations || iterations);
+        }
         if (!salt) throw new Error("服务端未返回密码盐");
         const verifier = await deriveVerifier(password, salt, iterations);
         const endpoint = setupRequired ? "/api/v1/auth/setup" : "/api/v1/auth/login";
@@ -2303,7 +3733,7 @@
     $("scrim").addEventListener("click", closeDrawer);
     $("snap-drawer-close").addEventListener("click", closeSnapshotDrawer);
     $("snapshot-scrim").addEventListener("click", closeSnapshotDrawer);
-    $("snapshot-search").addEventListener("input", renderGlobalSnapshots);
+    $("snapshot-search").addEventListener("input", () => { state.snapshotPage = 1; renderGlobalSnapshots(); });
     $("snapshot-restore-current").addEventListener("click", restoreCurrentSnapshot);
     $("snapshot-exit").addEventListener("click", exitSnapshotView);
     document.addEventListener("keydown", (event) => {
@@ -2425,19 +3855,18 @@
     });
     $("flow-summary-btn").addEventListener("click", loadFlowSummary);
     $("flow-summary-close").addEventListener("click", () => $("flow-summary-panel").classList.add("hidden"));
-    document.querySelectorAll("[data-task-filter]").forEach((button) => {
-      button.addEventListener("click", () => {
-        document.querySelectorAll("[data-task-filter]").forEach((b) => b.classList.remove("active"));
-        button.classList.add("active");
-        renderTasks(button.dataset.taskFilter);
-      });
-    });
+    $("audit-prev").addEventListener("click", () => { if (state.auditPage > 1) { state.auditPage -= 1; renderAudit(state.auditFilter); } });
+    $("audit-next").addEventListener("click", () => { state.auditPage += 1; renderAudit(state.auditFilter); });
+    $("snapshot-prev").addEventListener("click", () => { if (state.snapshotPage > 1) { state.snapshotPage -= 1; renderGlobalSnapshots(); } });
+    $("snapshot-next").addEventListener("click", () => { state.snapshotPage += 1; renderGlobalSnapshots(); });
+    $("account-form").addEventListener("submit", createAccount);
     $("audit-verify").addEventListener("click", () => verifyAudit(false));
     $("last-moment-btn").addEventListener("click", () => switchView("last"));
     document.querySelectorAll("[data-audit-filter]").forEach((button) => {
       button.addEventListener("click", () => {
         document.querySelectorAll("[data-audit-filter]").forEach((b) => b.classList.remove("active"));
         button.classList.add("active");
+        state.auditPage = 1;
         renderAudit(button.dataset.auditFilter);
       });
     });
@@ -2446,7 +3875,14 @@
     document.querySelectorAll("[data-cmd]").forEach((button) => {
       button.addEventListener("click", () => { $("command-input").value = button.dataset.cmd; $("command-input").focus(); });
     });
-    document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      closeDrawer();
+      if ($("map-container-modal")) $("map-container-modal").classList.add("hidden");
+      if ($("map-3d")) $("map-3d").classList.add("hidden");
+      if (state.map.three) state.map.three = null;
+    });
+    mapBindInteractions();
   }
 
   async function loadAuthStatus() {
