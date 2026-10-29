@@ -619,7 +619,7 @@ function meta(session) {
   return {
     serverId: store.server.serverId || "external",
     serverName: store.server.name || "BDS",
-    version: "1.2.0",
+    version: "1.2.1",
     mode: online ? "external" : "cold",
     server: { online: online, lastSeen: store.server.lastSeen || 0, shutdownAt: store.server.shutdownAt || 0 },
     dataAsOf: store.server.shutdownAt || store.server.lastSeen || 0,
@@ -1190,7 +1190,7 @@ async function handleApi(req, res, url) {
         if (Number(snap.ts || 0) >= start) snapshotsToday += 1;
       }
       json(res, 200, { ok: true, data: {
-        server: { id: store.server.serverId || "external", name: store.server.name || "BDS", online: meta().server.online, version: "1.2.0" },
+        server: { id: store.server.serverId || "external", name: store.server.name || "BDS", online: meta().server.online, version: "1.2.1" },
         counts: {
           playersOnline: online, playersTotal: players.length,
           snapshotsToday, flowToday: todayFlow.length,
@@ -1219,8 +1219,8 @@ async function handleApi(req, res, url) {
     }
     if (pathname === "/modules") {
       json(res, 200, { ok: true, data: [
-        { id: "command", name: "网页指令", version: "1.2.0" },
-        { id: "logistics", name: "物流信息", version: "1.2.0" }
+        { id: "command", name: "网页指令", version: "1.2.1" },
+        { id: "logistics", name: "物流信息", version: "1.2.1" }
       ] });
       return;
     }

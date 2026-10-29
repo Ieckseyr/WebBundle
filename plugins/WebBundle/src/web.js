@@ -519,7 +519,7 @@ class Web {
                 data: {
                     serverId: app.config.serverId,
                     serverName: app.config.serverName || "BDS",
-                    version: "1.2.0",
+                    version: "1.2.1",
                     mode: "embedded",
                     server: { online: true, lastSeen: Date.now() },
                     dataAsOf: Date.now(),
@@ -1118,7 +1118,7 @@ class Web {
                 id: app.config.serverId,
                 name: app.config.serverName || "BDS",
                 online: true,
-                version: "1.2.0"
+                version: "1.2.1"
             },
             counts: {
                 playersOnline: players.length,

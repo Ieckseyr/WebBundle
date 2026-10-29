@@ -2,7 +2,7 @@
 
 # WebBundle 网页查包
 
-> 随 `plugins/WebBundle` 发布 · `app.css?v=1.2.0` / `app.js?v=1.2.0`
+> 随 `plugins/WebBundle` 发布 · `app.css?v=1.2.1` / `app.js?v=1.2.1`
 
 BDS 背包查验、备份、还原、物品去向、网页指令和操作审计。
 
